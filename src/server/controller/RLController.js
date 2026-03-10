@@ -71,6 +71,10 @@ RLController.prototype.authorize = function(req, res, next)
 RLController.prototype.withJsonBody = function(handler)
 {
     return function (req, res) {
+        if (typeof(req.body) !== 'undefined' && req.body !== null) {
+            return handler(req, res);
+        }
+
         var raw = '';
 
         req.on('data', function (chunk) { raw += chunk; });
