@@ -22,7 +22,8 @@ function RoomsController(repository)
     this.callbacks = {
         emitAllRooms: function () { controller.emitAllRooms(this); },
         onCreateRoom: function (data) { controller.onCreateRoom(this, data[0], data[1]); },
-        onJoinRoom: function (data) { controller.onJoinRoom(this, data[0], data[1]); }
+        onJoinRoom: function (data) { controller.onJoinRoom(this, data[0], data[1]); },
+        onQuickStart: function (data) { controller.onQuickStart(this, data[0], data[1]); }
     };
 
     this.repository.on('room:open', this.onRoomOpen);
@@ -67,6 +68,7 @@ RoomsController.prototype.attachEvents = function(client)
     client.on('room:fetch', this.callbacks.emitAllRooms);
     client.on('room:create', this.callbacks.onCreateRoom);
     client.on('room:join', this.callbacks.onJoinRoom);
+    client.on('room:quickstart', this.callbacks.onQuickStart);
 };
 
 /**
@@ -80,6 +82,7 @@ RoomsController.prototype.detachEvents = function(client)
     client.removeListener('room:fetch', this.callbacks.emitAllRooms);
     client.removeListener('room:create', this.callbacks.onCreateRoom);
     client.removeListener('room:join', this.callbacks.onJoinRoom);
+    client.removeListener('room:quickstart', this.callbacks.onQuickStart);
 };
 
 /**
@@ -199,6 +202,40 @@ RoomsController.prototype.onRoomPlayer = function(data)
     var room = data.room.serialize(false);
 
     this.socketGroup.addEvent('room:players', { name: room.name,  players: room.players });
+};
+
+/**
+ * On quick start
+ *
+ * @param {SocketClient} client
+ * @param {Object} data
+ * @param {Function} callback
+ */
+RoomsController.prototype.onQuickStart = function(client, data, callback)
+{
+    var minPlayers = parseInt(data.players, 10) || 2;
+
+    // Find an existing quick-start room waiting for same player count
+    var room = null;
+    for (var i = this.repository.rooms.items.length - 1; i >= 0; i--) {
+        var candidate = this.repository.rooms.items[i];
+        if (candidate.quickStart && candidate.minPlayer === minPlayers && !candidate.game) {
+            room = candidate;
+            break;
+        }
+    }
+
+    // Create a new quick-start room if none found
+    if (!room) {
+        room = this.repository.create();
+        if (!room) {
+            return callback({success: false, error: 'Could not create room.'});
+        }
+        room.quickStart = true;
+        room.minPlayer = minPlayers;
+    }
+
+    callback({success: true, name: room.name});
 };
 
 /**

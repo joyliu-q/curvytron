@@ -61,6 +61,10 @@ curvytronApp.controller(
     'ProfileController',
     ['$scope', 'Profile', 'Radio', 'SoundManager', ProfileController]
 );
+curvytronApp.controller(
+    'QuickStartController',
+    ['$scope', '$routeParams', '$location', 'SocketClient', QuickStartController]
+);
 
 curvytronApp.config(['$routeProvider', '$locationProvider', function($routeProvider, $locationProvider) {
     //$locationProvider.html5Mode(true);
@@ -68,6 +72,14 @@ curvytronApp.config(['$routeProvider', '$locationProvider', function($routeProvi
         .when('/', {
             templateUrl: 'js/views/rooms/list.html',
             controller: 'RoomsController'
+        })
+        .when('/quick', {
+            templateUrl: 'js/views/quickstart/waiting.html',
+            controller: 'QuickStartController'
+        })
+        .when('/quick/:n', {
+            templateUrl: 'js/views/quickstart/waiting.html',
+            controller: 'QuickStartController'
         })
         .when('/about', {
             templateUrl: 'js/views/pages/about.html'

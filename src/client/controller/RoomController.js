@@ -27,6 +27,7 @@ function RoomController($scope, $routeParams, $location, client, repository, pro
     this.hasTouch       = typeof(window.ontouchstart) !== 'undefined';
     this.name           = decodeURIComponent($routeParams.name);
     this.password       = typeof(search.password) !== 'undefined' ? search.password : null;
+    this.autostart      = search.autostart === '1';
     this.repository     = repository;
     this.controlSynchro = false;
     this.useTouch       = false;
@@ -292,6 +293,10 @@ RoomController.prototype.onJoin = function(e)
 
         if (this.useTouch) {
             player.setTouch();
+        }
+
+        if (this.autostart && !player.ready) {
+            this.setReady(player);
         }
     } else {
         this.notifier.notify('New player joined!');
