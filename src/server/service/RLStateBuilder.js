@@ -18,11 +18,58 @@ RLStateBuilder.prototype.empty = 0;
 RLStateBuilder.prototype.solid = 1;
 
 /**
- * Bonus occupancy value
+ * Bonus occupancy base value
  *
  * @type {Number}
  */
 RLStateBuilder.prototype.bonus = 2;
+
+/**
+ * Player occupancy base value
+ *
+ * @type {Number}
+ */
+RLStateBuilder.prototype.playerBase = 100;
+
+/**
+ * Stable supported bonus type order
+ *
+ * @type {Array}
+ */
+RLStateBuilder.prototype.bonusTypes = [
+    'BonusSelfSmall',
+    'BonusSelfSlow',
+    'BonusSelfFast',
+    'BonusSelfMaster',
+    'BonusEnemySlow',
+    'BonusEnemyFast',
+    'BonusEnemyBig',
+    'BonusEnemyInverse',
+    'BonusEnemyStraightAngle',
+    'BonusGameBorderless',
+    'BonusAllColor',
+    'BonusGameClear'
+];
+
+/**
+ * Stable ASCII markers per bonus type
+ *
+ * @type {Object}
+ */
+RLStateBuilder.prototype.bonusMarkers = {
+    BonusSelfSmall: 's',
+    BonusSelfSlow: 'l',
+    BonusSelfFast: 'f',
+    BonusSelfMaster: 'm',
+    BonusEnemySlow: 'w',
+    BonusEnemyFast: 't',
+    BonusEnemyBig: 'b',
+    BonusEnemyInverse: 'i',
+    BonusEnemyStraightAngle: 'a',
+    BonusGameBorderless: 'o',
+    BonusAllColor: 'c',
+    BonusGameClear: 'x'
+};
 
 /**
  * Build a state snapshot for the given session
@@ -44,6 +91,7 @@ RLStateBuilder.prototype.build = function(session, options)
         bonuses = [],
         seen = {},
         actorIndex = 0,
+        legend,
         i;
 
     if (!game) {
@@ -71,7 +119,8 @@ RLStateBuilder.prototype.build = function(session, options)
                 width: gridWidth,
                 height: gridHeight,
                 cells: grid.cells,
-                ascii: this.toAscii(grid.chars)
+                ascii: this.toAscii(grid.chars),
+                legend: this.buildLegend(players)
             }
         };
     }
@@ -86,7 +135,15 @@ RLStateBuilder.prototype.build = function(session, options)
 
     for (i = 0; i < game.bonusManager.bonuses.items.length; i++) {
         bonuses.push(this.serializeBonus(game.bonusManager.bonuses.items[i]));
-        this.markDisc(grid, game, game.bonusManager.bonuses.items[i].x, game.bonusManager.bonuses.items[i].y, BaseBonus.prototype.radius, this.bonus, '*');
+        this.markDisc(
+            grid,
+            game,
+            game.bonusManager.bonuses.items[i].x,
+            game.bonusManager.bonuses.items[i].y,
+            BaseBonus.prototype.radius,
+            this.getBonusValue(game.bonusManager.bonuses.items[i].constructor.name),
+            this.getBonusMarker(game.bonusManager.bonuses.items[i].constructor.name)
+        );
     }
 
     for (i = 0; i < session.room.players.items.length; i++) {
@@ -99,13 +156,15 @@ RLStateBuilder.prototype.build = function(session, options)
                 session.room.players.items[i].avatar.x,
                 session.room.players.items[i].avatar.y,
                 session.room.players.items[i].avatar.radius * 2,
-                this.bonus + actorIndex + 1,
+                this.getPlayerValue(actorIndex),
                 this.getPlayerMarker(actorIndex)
             );
         }
 
         actorIndex++;
     }
+
+    legend = this.buildLegend(players);
 
     return {
         session_id: session.id,
@@ -126,7 +185,8 @@ RLStateBuilder.prototype.build = function(session, options)
             width: gridWidth,
             height: gridHeight,
             cells: grid.cells,
-            ascii: this.toAscii(grid.chars)
+            ascii: this.toAscii(grid.chars),
+            legend: legend
         }
     };
 };
@@ -260,6 +320,44 @@ RLStateBuilder.prototype.markDisc = function(grid, game, x, y, radius, value, ma
 };
 
 /**
+ * Get a stable occupancy value for a bonus type
+ *
+ * @param {String} type
+ *
+ * @return {Number}
+ */
+RLStateBuilder.prototype.getBonusValue = function(type)
+{
+    var index = this.bonusTypes.indexOf(type);
+
+    return index === -1 ? this.bonus + this.bonusTypes.length : this.bonus + index;
+};
+
+/**
+ * Get a stable ASCII marker for a bonus type
+ *
+ * @param {String} type
+ *
+ * @return {String}
+ */
+RLStateBuilder.prototype.getBonusMarker = function(type)
+{
+    return this.bonusMarkers[type] || '?';
+};
+
+/**
+ * Get a stable occupancy value for a player slot
+ *
+ * @param {Number} index
+ *
+ * @return {Number}
+ */
+RLStateBuilder.prototype.getPlayerValue = function(index)
+{
+    return this.playerBase + index;
+};
+
+/**
  * Serialize a player
  *
  * @param {Player} player
@@ -294,7 +392,8 @@ RLStateBuilder.prototype.serializePlayer = function(player, game, session, actor
         invincible: avatar ? avatar.invincible : null,
         score: avatar ? avatar.score : 0,
         round_score: avatar ? avatar.roundScore : 0,
-        marker: this.getPlayerMarker(actorIndex)
+        marker: this.getPlayerMarker(actorIndex),
+        occupancy_value: this.getPlayerValue(actorIndex)
     };
 };
 
@@ -307,11 +406,58 @@ RLStateBuilder.prototype.serializePlayer = function(player, game, session, actor
  */
 RLStateBuilder.prototype.serializeBonus = function(bonus)
 {
+    var type = bonus.constructor.name;
+
     return {
         id: bonus.id,
-        type: bonus.constructor.name,
+        type: type,
         x: bonus.x,
-        y: bonus.y
+        y: bonus.y,
+        marker: this.getBonusMarker(type),
+        occupancy_value: this.getBonusValue(type)
+    };
+};
+
+/**
+ * Build a legend for ASCII and occupancy values
+ *
+ * @param {Array} players
+ *
+ * @return {Object}
+ */
+RLStateBuilder.prototype.buildLegend = function(players)
+{
+    var bonuses = {};
+
+    for (var i = 0; i < this.bonusTypes.length; i++) {
+        bonuses[this.bonusTypes[i]] = {
+            marker: this.getBonusMarker(this.bonusTypes[i]),
+            value: this.getBonusValue(this.bonusTypes[i])
+        };
+    }
+
+    bonuses.unknown = {
+        marker: '?',
+        value: this.bonus + this.bonusTypes.length
+    };
+
+    return {
+        empty: {
+            marker: '.',
+            value: this.empty
+        },
+        solid: {
+            marker: '#',
+            value: this.solid
+        },
+        bonuses: bonuses,
+        players: players.map(function (player) {
+            return {
+                player_id: player.player_id,
+                marker: player.marker,
+                value: player.occupancy_value
+            };
+        })
     };
 };
 
