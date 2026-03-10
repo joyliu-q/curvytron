@@ -300,22 +300,35 @@ RLStateBuilder.prototype.markDisc = function(grid, game, x, y, radius, value, ma
 {
     var width = grid.cells[0].length,
         height = grid.cells.length,
-        minX = Math.max(0, Math.floor((x - radius) / game.size * width)),
-        maxX = Math.min(width - 1, Math.ceil((x + radius) / game.size * width)),
-        minY = Math.max(0, Math.floor((y - radius) / game.size * height)),
-        maxY = Math.min(height - 1, Math.ceil((y + radius) / game.size * height));
+        cellW = game.size / width,
+        cellH = game.size / height,
+        effectiveRadius = Math.max(radius, Math.max(cellW, cellH) * 0.75),
+        minX = Math.max(0, Math.floor((x - effectiveRadius) / game.size * width)),
+        maxX = Math.min(width - 1, Math.ceil((x + effectiveRadius) / game.size * width)),
+        minY = Math.max(0, Math.floor((y - effectiveRadius) / game.size * height)),
+        maxY = Math.min(height - 1, Math.ceil((y + effectiveRadius) / game.size * height)),
+        marked = false;
 
     for (var gridY = minY; gridY <= maxY; gridY++) {
         for (var gridX = minX; gridX <= maxX; gridX++) {
-            var worldX = (gridX + 0.5) * game.size / width,
-                worldY = (gridY + 0.5) * game.size / height,
+            var worldX = (gridX + 0.5) * cellW,
+                worldY = (gridY + 0.5) * cellH,
                 distance = Math.sqrt(Math.pow(worldX - x, 2) + Math.pow(worldY - y, 2));
 
-            if (distance <= radius) {
+            if (distance <= effectiveRadius) {
                 grid.cells[gridY][gridX] = value;
                 grid.chars[gridY][gridX] = marker;
+                marked = true;
             }
         }
+    }
+
+    if (!marked) {
+        var cx = Math.max(0, Math.min(width - 1, Math.floor(x / game.size * width))),
+            cy = Math.max(0, Math.min(height - 1, Math.floor(y / game.size * height)));
+
+        grid.cells[cy][cx] = value;
+        grid.chars[cy][cx] = marker;
     }
 };
 
@@ -392,9 +405,42 @@ RLStateBuilder.prototype.serializePlayer = function(player, game, session, actor
         invincible: avatar ? avatar.invincible : null,
         score: avatar ? avatar.score : 0,
         round_score: avatar ? avatar.roundScore : 0,
+        active_bonuses: avatar ? this.serializeActiveBonuses(avatar) : [],
         marker: this.getPlayerMarker(actorIndex),
         occupancy_value: this.getPlayerValue(actorIndex)
     };
+};
+
+/**
+ * Serialize active bonuses on an avatar
+ *
+ * @param {Avatar} avatar
+ *
+ * @return {Array}
+ */
+RLStateBuilder.prototype.serializeActiveBonuses = function(avatar)
+{
+    var now = Date.now(),
+        bonuses = avatar.bonusStack.bonuses.items,
+        result = [],
+        bonus, type, elapsed, remaining;
+
+    for (var i = 0; i < bonuses.length; i++) {
+        bonus = bonuses[i];
+        type = bonus.constructor.name;
+        elapsed = bonus.appliedAt ? now - bonus.appliedAt : 0;
+        remaining = bonus.duration ? Math.max(0, bonus.duration - elapsed) : null;
+
+        result.push({
+            type: type,
+            affect: bonus.affect,
+            duration: bonus.duration,
+            remaining_ms: remaining,
+            marker: this.getBonusMarker(type)
+        });
+    }
+
+    return result;
 };
 
 /**

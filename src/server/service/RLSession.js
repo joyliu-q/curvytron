@@ -223,7 +223,7 @@ RLSession.prototype.resolveActorAction = function(actor, actions)
         return actions[actor.player.id];
     }
 
-    return 'straight';
+    return actor.controller.action || 'straight';
 };
 
 /**
@@ -335,6 +335,11 @@ RLSession.prototype.close = function()
     }
 
     this.actors.clear();
+
+    // Remove training room from the repository
+    if (this.mode === 'training') {
+        this.manager.server.roomRepository.remove(this.room);
+    }
 };
 
 /**

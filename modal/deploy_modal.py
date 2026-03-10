@@ -5,20 +5,11 @@ import time
 import modal
 import modal.experimental
 
-# --- Build the project tarball locally before image construction ---
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-subprocess.run(
-    [
-        "tar", "czf", "/tmp/curvytron.tar.gz",
-        "--exclude=node_modules", "--exclude=bower_components",
-        "--exclude=.git", "--exclude=.idea", "--exclude=stats",
-        "--exclude=package-lock.json", "-C", ".", ".",
-    ],
-    check=True,
-)
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = modal.App(name="curvytron")
 
+# Image: system deps + node + global tools only (rarely changes)
 curvytron_image = (
     modal.Image.debian_slim(python_version="3.10")
     .run_commands(
@@ -26,17 +17,14 @@ curvytron_image = (
         "curl -fsSL https://nodejs.org/dist/v10.24.1/node-v10.24.1-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1",
         "npm install -g bower gulp-cli",
     )
-    .add_local_file("/tmp/curvytron.tar.gz", remote_path="/tmp/curvytron.tar.gz", copy=True)
-    .run_commands(
-        "mkdir -p /app && tar xzf /tmp/curvytron.tar.gz -C /app && rm /tmp/curvytron.tar.gz",
-        "cd /app && npm install --ignore-scripts && bower install --allow-root -F",
-        "cd /app && cp config.json.sample config.json",
-        "mkdir -p /app/web/css && sassc --style compressed /app/src/sass/style.scss /app/web/css/style.css",
-        "rm -rf /app/node_modules/sass && mkdir -p /app/node_modules/sass && echo 'module.exports = {};' > /app/node_modules/sass/index.js && echo '{\"name\":\"sass\",\"main\":\"index.js\"}' > /app/node_modules/sass/package.json",
-        "cd /app && gulp jshint server front-expose ga views front-min",
-    )
     .pip_install("httpx")
+    .add_local_dir(
+        PROJECT_DIR,
+        remote_path="/app",
+        ignore=["node_modules", ".git", "__pycache__", "modal", "uv.lock", ".claude"],
+    )
 )
+
 
 with curvytron_image.imports():
     import httpx
@@ -51,6 +39,31 @@ with curvytron_image.imports():
 class Curvytron:
     @modal.enter()
     def start(self):
+        # Install deps + build on container start (uses mounted source code)
+        subprocess.run(
+            "npm install --ignore-scripts && bower install --allow-root -F",
+            cwd="/app", shell=True, check=True,
+        )
+        subprocess.run(
+            "cp -n config.json.sample config.json",
+            cwd="/app", shell=True, check=True,
+        )
+        subprocess.run(
+            "mkdir -p /app/web/css && sassc --style compressed /app/src/sass/style.scss /app/web/css/style.css",
+            shell=True, check=True,
+        )
+        # Stub out the sass module to avoid native build issues
+        subprocess.run(
+            "rm -rf /app/node_modules/sass && mkdir -p /app/node_modules/sass"
+            " && echo 'module.exports = {};' > /app/node_modules/sass/index.js"
+            ' && echo \'{"name":"sass","main":"index.js"}\' > /app/node_modules/sass/package.json',
+            shell=True, check=True,
+        )
+        subprocess.run(
+            "gulp jshint server front-expose ga views front-min",
+            cwd="/app", shell=True, check=True,
+        )
+
         self.process = subprocess.Popen(
             ["node", "bin/curvytron.js"],
             cwd="/app",

@@ -69,6 +69,10 @@ RLManager.prototype.createTrainingRoom = function(data)
 
     this.applyBonuses(room, data.bonuses);
 
+    // Register in the room repository so the frontend can spectate via WebSocket
+    this.server.roomRepository.rooms.add(room);
+    room.on('close', this.server.roomRepository.onRoomClose);
+
     return room;
 };
 
@@ -89,6 +93,24 @@ RLManager.prototype.applyBonuses = function(room, bonuses)
             room.config.setBonus(bonus, bonuses[bonus]);
         }
     }
+};
+
+/**
+ * Find a session by seed
+ *
+ * @param {String} seed
+ *
+ * @return {RLSession|null}
+ */
+RLManager.prototype.findSessionBySeed = function(seed)
+{
+    for (var i = 0; i < this.sessions.items.length; i++) {
+        if (this.sessions.items[i].seed === seed) {
+            return this.sessions.items[i];
+        }
+    }
+
+    return null;
 };
 
 /**
@@ -127,7 +149,7 @@ RLManager.prototype.getGridSize = function(value)
     value = parseInt(value, 10);
 
     if (!value || value < 8) {
-        return 64;
+        return 100;
     }
 
     return Math.min(128, value);

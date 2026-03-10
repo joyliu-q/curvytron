@@ -27,6 +27,7 @@ function RLController(server)
  */
 RLController.prototype.attachRoutes = function()
 {
+    this.server.app.get('/api/rl/sessions', this.listSessions);
     this.server.app.post('/api/rl/sessions', this.withJsonBody(this.createSession));
     this.server.app.get('/api/rl/sessions/:sessionId/state', this.getSessionState);
     this.server.app.post('/api/rl/sessions/:sessionId/bots', this.withJsonBody(this.addBot));
@@ -96,6 +97,28 @@ RLController.prototype.requireSession = function(req, res)
 };
 
 /**
+ * List sessions, optionally filtered by seed
+ *
+ * @param {Object} req
+ * @param {Object} res
+ */
+RLController.prototype.listSessions = function(req, res)
+{
+    var self = this;
+    var sessions = this.manager.sessions.items.map(function(session) {
+        return self.serializeSession(session);
+    });
+
+    var seed = req.query && req.query.seed;
+
+    if (seed) {
+        sessions = sessions.filter(function(s) { return s.seed === seed; });
+    }
+
+    this.sendJson(res, 200, sessions);
+};
+
+/**
  * Create a session
  *
  * @param {Object} req
@@ -103,6 +126,15 @@ RLController.prototype.requireSession = function(req, res)
  */
 RLController.prototype.createSession = function(req, res)
 {
+    // If a session with this seed already exists, return it
+    if (req.body.seed) {
+        var existing = this.manager.findSessionBySeed(req.body.seed);
+
+        if (existing) {
+            return this.sendJson(res, 200, this.serializeSession(existing));
+        }
+    }
+
     var session = this.manager.createSession(req.body);
 
     if (!session) {
@@ -313,6 +345,7 @@ RLController.prototype.serializeSession = function(session)
 {
     return {
         session_id: session.id,
+        room_name: session.room.name,
         mode: session.mode,
         seed: session.seed,
         grid: session.grid,
