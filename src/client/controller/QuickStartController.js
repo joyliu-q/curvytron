@@ -16,6 +16,7 @@ function QuickStartController($scope, $routeParams, $location, client)
     this.$location    = $location;
     this.client       = client;
     this.minPlayers   = parseInt($routeParams.n, 10) || 2;
+    this.seed         = $routeParams.seed || null;
 
     this.$scope.minPlayers = this.minPlayers;
     this.$scope.status     = 'Connecting...';
@@ -46,7 +47,7 @@ QuickStartController.prototype.quickStart = function()
 
     this.client.addEvent(
         'room:quickstart',
-        { players: this.minPlayers },
+        { players: this.minPlayers, seed: this.seed },
         function (result) {
             if (result.success) {
                 controller.$location.path('/room/' + encodeURIComponent(result.name)).search('autostart', '1');

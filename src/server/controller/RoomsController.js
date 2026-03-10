@@ -213,24 +213,42 @@ RoomsController.prototype.onRoomPlayer = function(data)
  */
 RoomsController.prototype.onQuickStart = function(client, data, callback)
 {
-    var minPlayers = parseInt(data.players, 10) || 2;
+    var minPlayers = parseInt(data.players, 10) || 2,
+        seed = typeof(data.seed) === 'string' && data.seed.length > 0
+            ? data.seed.substr(0, Room.prototype.maxLength).trim()
+            : null;
 
-    // Find an existing quick-start room waiting for same player count
     var room = null;
-    for (var i = this.repository.rooms.items.length - 1; i >= 0; i--) {
-        var candidate = this.repository.rooms.items[i];
-        if (candidate.quickStart && candidate.minPlayer === minPlayers && !candidate.game) {
-            room = candidate;
-            break;
+
+    // If a seed is provided, look for an existing room with that name
+    if (seed) {
+        room = this.repository.get(seed);
+        if (room && room.game) {
+            // Room exists but game already started, can't join
+            room = null;
         }
     }
 
-    // Create a new quick-start room if none found
     if (!room) {
-        room = this.repository.create();
-        if (!room) {
-            return callback({success: false, error: 'Could not create room.'});
+        // Find an existing quick-start room waiting for same player count (only when no seed)
+        if (!seed) {
+            for (var i = this.repository.rooms.items.length - 1; i >= 0; i--) {
+                var candidate = this.repository.rooms.items[i];
+                if (candidate.quickStart && candidate.minPlayer === minPlayers && !candidate.game) {
+                    room = candidate;
+                    break;
+                }
+            }
         }
+
+        // Create a new room if none found
+        if (!room) {
+            room = this.repository.create(seed || undefined);
+            if (!room) {
+                return callback({success: false, error: 'Could not create room.'});
+            }
+        }
+
         room.quickStart = true;
         room.minPlayer = minPlayers;
     }

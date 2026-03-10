@@ -81,6 +81,10 @@ curvytronApp.config(['$routeProvider', '$locationProvider', function($routeProvi
             templateUrl: 'js/views/quickstart/waiting.html',
             controller: 'QuickStartController'
         })
+        .when('/quick/:n/:seed', {
+            templateUrl: 'js/views/quickstart/waiting.html',
+            controller: 'QuickStartController'
+        })
         .when('/about', {
             templateUrl: 'js/views/pages/about.html'
         })
