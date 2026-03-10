@@ -4,7 +4,8 @@ var fs        = require('fs'),
     uglify    = require('gulp-uglify'),
     header    = require('gulp-header'),
     jshint    = require('gulp-jshint'),
-    sass      = require('gulp-sass'),
+    dartSass  = require('sass'),
+    through2  = require('through2'),
     rename    = require('gulp-rename'),
     plumber   = require('gulp-plumber'),
     gutil     = require('gulp-util'),
@@ -116,10 +117,23 @@ gulp.task('server', function() {
         .pipe(gulp.dest(recipes.server.path));
 });
 
+function compileSass() {
+    return through2.obj(function(file, enc, cb) {
+        try {
+            var result = dartSass.compile(file.path, { loadPaths: [sassDir] });
+            file.contents = Buffer.from(result.css);
+            file.path = file.path.replace(/\.scss$/, '.css');
+            cb(null, file);
+        } catch (err) {
+            cb(new gutil.PluginError('sass', err.message));
+        }
+    });
+}
+
 gulp.task('sass-full', function() {
     return gulp.src(sassDir + 'style.scss')
         .pipe(plumber({ errorHandler: onError }))
-        .pipe(sass())
+        .pipe(compileSass())
         .pipe(rename('style.css'))
         .pipe(gulp.dest(cssDir));
 });
@@ -127,7 +141,7 @@ gulp.task('sass-full', function() {
 gulp.task('sass-min', function() {
     return gulp.src(sassDir + 'style.scss')
         .pipe(plumber({ errorHandler: onError }))
-        .pipe(sass())
+        .pipe(compileSass())
         .pipe(minifyCSS())
         .pipe(rename('style.css'))
         .pipe(gulp.dest(cssDir));

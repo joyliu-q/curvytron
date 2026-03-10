@@ -116,6 +116,10 @@ Profile.prototype.load = function()
         this.setColor(BasePlayer.prototype.getRandomColor());
     }
 
+    if (!this.name) {
+        this.setName('Player-' + Math.random().toString(36).substr(2, 4).toUpperCase());
+    }
+
     this.loading = false;
 };
 

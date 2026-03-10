@@ -18,7 +18,10 @@ function Server(config)
     this.onSocketDisconnection = this.onSocketDisconnection.bind(this);
     this.onError               = this.onError.bind(this);
 
+    this.app.use(express.json());
     this.app.use(express['static']('web'));
+
+    this.rlController = new RLController(this);
 
     this.server.on('error', this.onError);
     this.server.on('upgrade', this.authorizationHandler);

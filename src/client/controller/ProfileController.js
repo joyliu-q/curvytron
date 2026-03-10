@@ -17,7 +17,6 @@ function ProfileController($scope, profile, radio, sound)
     this.sound    = sound;
     this.open     = false;
     this.loaded   = false;
-    this.tuto     = null;
     this.panel    = null;
     this.controls = null;
 
@@ -54,7 +53,6 @@ ProfileController.prototype.constructor = ProfileController;
 ProfileController.prototype.onLoaded = function()
 {
     this.panel  = document.querySelector('.panel');
-    this.tuto   = this.panel.querySelector('.profile-tuto');
     this.loaded = true;
     this.emit('loaded');
 };
@@ -67,28 +65,20 @@ ProfileController.prototype.onLoadControl = function()
     this.controls = this.panel.querySelectorAll('input.control');
 };
 
-/**
- * Open profile
- */
 ProfileController.prototype.openProfile = function()
 {
     if (!this.open) {
         this.open = true;
         this.panel.classList.add('active');
-        this.tuto.classList.toggle('active', !this.profile.isComplete());
         this.profile.emit('open');
     }
 };
 
-/**
- * Close profile
- */
 ProfileController.prototype.closeProfile = function()
 {
-    if (this.open && this.profile.isComplete()) {
+    if (this.open) {
         this.open = false;
         this.panel.classList.remove('active');
-        this.tuto.classList.toggle('active', !this.profile.isComplete());
         this.profile.emit('close');
     }
 };
