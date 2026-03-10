@@ -7,7 +7,7 @@ function BonusManager(game, bonuses, rate)
 {
     BaseBonusManager.call(this, game);
 
-    this.world           = new World(this.game.size, 1);
+    this.world           = new World(this.game.size, 1, this.game.random);
     this.popingTimeout   = null;
     this.bonusTypes      = bonuses;
     this.bonusPopingTime = this.bonusPopingTime - ((this.bonusPopingTime/2) * rate);
@@ -28,7 +28,7 @@ BonusManager.prototype.start = function()
     this.world.activate();
 
     if (this.bonusTypes.length) {
-        this.popingTimeout = setTimeout(this.popBonus, this.getRandomPopingTime());
+        this.popingTimeout = this.game.scheduleTimeout(this.popBonus, this.getRandomPopingTime());
     }
 };
 
@@ -38,7 +38,8 @@ BonusManager.prototype.start = function()
 BonusManager.prototype.stop = function()
 {
     if (this.popingTimeout) {
-        this.popingTimeout = clearTimeout(this.popingTimeout);
+        this.game.clearScheduleTimeout(this.popingTimeout);
+        this.popingTimeout = null;
     }
 
     BaseBonusManager.prototype.stop.call(this);
@@ -59,7 +60,7 @@ BonusManager.prototype.clear = function()
 BonusManager.prototype.popBonus = function ()
 {
     if (this.bonusTypes.length) {
-        this.popingTimeout = setTimeout(this.popBonus, this.getRandomPopingTime());
+        this.popingTimeout = this.game.scheduleTimeout(this.popBonus, this.getRandomPopingTime());
 
         if (this.bonuses.count() < this.bonusCap) {
             var bonusType = this.getRandomBonusType();
@@ -156,7 +157,7 @@ BonusManager.prototype.remove = function(bonus)
  */
 BonusManager.prototype.getRandomPopingTime  = function()
 {
-    return this.bonusPopingTime * (1 +  Math.random());
+    return this.bonusPopingTime * (1 +  this.game.random());
 };
 
 /**
@@ -185,7 +186,7 @@ BonusManager.prototype.getRandomBonusType = function()
         }
     }
 
-    var value = Math.random() * pot[pot.length - 1];
+    var value = this.game.random() * pot[pot.length - 1];
 
     for (i = 0; i < total; i++) {
         if (value < pot[i]) {
@@ -202,5 +203,5 @@ BonusManager.prototype.getRandomBonusType = function()
 BonusManager.prototype.setSize = function()
 {
     this.world.clear();
-    this.world = new World(this.game.size, 1);
+    this.world = new World(this.game.size, 1, this.game.random);
 };

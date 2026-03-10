@@ -18,6 +18,13 @@ function BaseGame(room)
     this.started      = false;
     this.bonusManager = new BonusManager(this, room.config.getBonuses(), room.config.getVariable('bonusRate'));
     this.inRound      = false;
+    this.randomGenerator = room && room.randomGenerator ? room.randomGenerator : null;
+    this.manual       = room && room.manualGame ? true : false;
+    this.fixedStep    = typeof(room.fixedStep) === 'number' ? room.fixedStep : this.framerate;
+    this.clock        = 0;
+    this.tick         = 0;
+    this.schedules    = [];
+    this.scheduleId   = 0;
 
     this.start    = this.start.bind(this);
     this.stop     = this.stop.bind(this);
@@ -26,6 +33,8 @@ function BaseGame(room)
     this.endRound = this.endRound.bind(this);
     this.end      = this.end.bind(this);
     this.onFrame  = this.onFrame.bind(this);
+    this.advance  = this.advance.bind(this);
+    this.random   = this.random.bind(this);
 }
 
 BaseGame.prototype = Object.create(EventEmitter.prototype);
@@ -37,6 +46,16 @@ BaseGame.prototype.constructor = BaseGame;
  * @type {Number}
  */
 BaseGame.prototype.framerate = 1/60 * 1000;
+
+/**
+ * Random float from runtime RNG
+ *
+ * @return {Float}
+ */
+BaseGame.prototype.random = function()
+{
+    return this.randomGenerator ? this.randomGenerator.next() : Math.random();
+};
 
 /**
  * Map size factor per player
@@ -106,6 +125,13 @@ BaseGame.prototype.removeAvatar = function(avatar)
 BaseGame.prototype.start = function()
 {
     if (!this.frame) {
+        if (this.manual) {
+            this.frame = true;
+            this.onStart();
+
+            return;
+        }
+
         this.onStart();
         this.loop();
     }
@@ -117,6 +143,13 @@ BaseGame.prototype.start = function()
 BaseGame.prototype.stop = function()
 {
     if (this.frame) {
+        if (this.manual) {
+            this.frame = null;
+            this.onStop();
+
+            return;
+        }
+
         this.clearFrame();
         this.onStop();
     }
@@ -143,7 +176,7 @@ BaseGame.prototype.loop = function()
  */
 BaseGame.prototype.onStart = function()
 {
-    this.rendered = new Date().getTime();
+    this.rendered = this.manual ? this.clock : new Date().getTime();
     this.bonusManager.start();
     this.fps.start();
 };
@@ -170,6 +203,7 @@ BaseGame.prototype.onStop = function()
 BaseGame.prototype.onRoundNew = function()
 {
     this.borderless = BaseGame.prototype.borderless;
+    this.tick = 0;
 
     this.bonusManager.clear();
 
@@ -190,6 +224,10 @@ BaseGame.prototype.onRoundEnd = function() {};
  */
 BaseGame.prototype.newFrame = function()
 {
+    if (this.manual) {
+        return;
+    }
+
     this.frame = setTimeout(this.loop, this.framerate);
 };
 
@@ -198,8 +236,117 @@ BaseGame.prototype.newFrame = function()
  */
 BaseGame.prototype.clearFrame = function()
 {
+    if (this.manual) {
+        this.frame = null;
+
+        return;
+    }
+
     clearTimeout(this.frame);
     this.frame = null;
+};
+
+/**
+ * Schedule a callback
+ *
+ * @param {Function} callback
+ * @param {Number} delay
+ *
+ * @return {Number|Object}
+ */
+BaseGame.prototype.scheduleTimeout = function(callback, delay)
+{
+    if (!this.manual) {
+        return setTimeout(callback, delay);
+    }
+
+    var schedule = {
+        id: ++this.scheduleId,
+        callback: callback,
+        due: this.clock + Math.max(0, delay)
+    };
+
+    this.schedules.push(schedule);
+
+    return schedule.id;
+};
+
+/**
+ * Cancel a scheduled callback
+ *
+ * @param {Number|Object} id
+ */
+BaseGame.prototype.clearScheduleTimeout = function(id)
+{
+    if (!this.manual) {
+        clearTimeout(id);
+
+        return;
+    }
+
+    for (var i = this.schedules.length - 1; i >= 0; i--) {
+        if (this.schedules[i].id === id) {
+            this.schedules.splice(i, 1);
+        }
+    }
+};
+
+/**
+ * Run all due callbacks
+ */
+BaseGame.prototype.runSchedules = function()
+{
+    var executed = true,
+        schedule,
+        i;
+
+    while (executed) {
+        executed = false;
+
+        this.schedules.sort(function (a, b) { return a.due > b.due ? 1 : (a.due < b.due ? -1 : 0); });
+
+        for (i = 0; i < this.schedules.length; i++) {
+            schedule = this.schedules[i];
+
+            if (schedule.due > this.clock) {
+                break;
+            }
+
+            this.schedules.splice(i, 1);
+            schedule.callback();
+            executed = true;
+            break;
+        }
+    }
+};
+
+/**
+ * Advance a manual game by ticks
+ *
+ * @param {Number} ticks
+ *
+ * @return {Boolean}
+ */
+BaseGame.prototype.advance = function(ticks)
+{
+    if (!this.manual) {
+        return false;
+    }
+
+    ticks = Math.max(1, parseInt(ticks, 10) || 1);
+
+    for (var i = 0; i < ticks; i++) {
+        this.clock += this.fixedStep;
+        this.runSchedules();
+
+        if (this.frame) {
+            this.rendered = this.clock;
+            this.onFrame(this.fixedStep);
+            this.fps.onFrame();
+        }
+    }
+
+    return true;
 };
 
 /**
@@ -209,6 +356,7 @@ BaseGame.prototype.clearFrame = function()
  */
 BaseGame.prototype.onFrame = function(step)
 {
+    this.tick++;
     this.update(step);
 };
 
@@ -325,7 +473,7 @@ BaseGame.prototype.newRound = function(time)
     if (!this.inRound) {
         this.inRound = true;
         this.onRoundNew();
-        setTimeout(this.start, typeof(time) !== 'undefined' ? time : this.warmupTime);
+        this.scheduleTimeout(this.start, typeof(time) !== 'undefined' ? time : this.warmupTime);
     }
 };
 
@@ -337,7 +485,7 @@ BaseGame.prototype.endRound = function()
     if (this.inRound) {
         this.inRound = false;
         this.onRoundEnd();
-        setTimeout(this.stop, this.warmdownTime);
+        this.scheduleTimeout(this.stop, this.warmdownTime);
     }
 };
 

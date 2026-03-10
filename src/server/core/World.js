@@ -1,7 +1,7 @@
 /**
  * World
  */
-function World(size, islands)
+function World(size, islands, random)
 {
     islands = typeof(islands) === 'number' ? islands : Math.round(size / this.islandGridSize);
 
@@ -10,6 +10,7 @@ function World(size, islands)
     this.islandSize = this.size / islands;
     this.active     = false;
     this.bodyCount  = 0;
+    this.random     = typeof(random) === 'function' ? random : Math.random;
 
     for (var id, x, y = islands - 1; y >= 0; y--) {
         for (x = islands- 1; x >= 0; x--) {
@@ -250,7 +251,7 @@ World.prototype.getHypotenuse = function(angle, adjacent)
  */
 World.prototype.getRandomAngle = function()
 {
-    return Math.random() * Math.PI * 2;
+    return this.random() * Math.PI * 2;
 };
 
 /**
@@ -262,7 +263,7 @@ World.prototype.getRandomAngle = function()
  */
 World.prototype.getRandomPoint = function(margin)
 {
-    return margin + Math.random() * (this.size - margin * 2);
+    return margin + this.random() * (this.size - margin * 2);
 };
 
 /**

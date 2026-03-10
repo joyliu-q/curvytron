@@ -12,6 +12,8 @@ function Server(config)
 
     this.roomRepository  = new RoomRepository();
     this.roomsController = new RoomsController(this.roomRepository);
+    this.rlController    = new RLController(this);
+    this.rl              = this.rlController;
 
     this.authorizationHandler  = this.authorizationHandler.bind(this);
     this.onSocketConnection    = this.onSocketConnection.bind(this);

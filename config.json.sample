@@ -1,6 +1,9 @@
 {
     "port": 8080,
     "googleAnalyticsId": null,
+    "rl": {
+        "token": null
+    },
     "inspector": {
         "enabled": false,
         "host": "localhost",

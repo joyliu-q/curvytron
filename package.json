@@ -53,6 +53,7 @@
     "usage": "^0.7.0"
   },
   "scripts": {
-    "postinstall": "bower install"
+    "postinstall": "bower install",
+    "rl:harness": "node scripts/rl-harness.js"
   }
 }

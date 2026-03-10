@@ -52,10 +52,12 @@ PrintManager.prototype.setPrinting = function(printing)
  */
 PrintManager.prototype.getRandomDistance = function()
 {
+    var random = this.avatar.game ? this.avatar.game.random() : Math.random();
+
     if (this.avatar.printing) {
-        return this.printDistance * (0.3 + Math.random() * 0.7);
+        return this.printDistance * (0.3 + random * 0.7);
     } else {
-        return this.holeDistance * (0.8 + Math.random() * 0.5);
+        return this.holeDistance * (0.8 + random * 0.5);
     }
 };
 

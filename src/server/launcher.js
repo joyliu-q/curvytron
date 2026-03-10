@@ -6,6 +6,7 @@ try {
 } catch (error) {
     config = {
         port: 8080,
+        rl: { token: null },
         inspector: { enabled: false }
     };
 }

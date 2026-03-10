@@ -7,7 +7,7 @@ function Game(room)
 {
     BaseGame.call(this, room);
 
-    this.world        = new World(this.size);
+    this.world        = new World(this.size, null, this.random);
     this.deaths       = new Collection([], 'id');
     this.controller   = new GameController(this);
     this.bonusStack   = new GameBonusStack(this);
@@ -21,6 +21,7 @@ function Game(room)
 
     for (i = this.avatars.items.length - 1; i >= 0; i--) {
         avatar = this.avatars.items[i];
+        avatar.game = this;
         avatar.clear();
         avatar.on('point', this.onPoint);
     }
@@ -28,6 +29,13 @@ function Game(room)
 
 Game.prototype = Object.create(BaseGame.prototype);
 Game.prototype.constructor = Game;
+
+/**
+ * Delay before avatars start printing trails
+ *
+ * @type {Number}
+ */
+Game.prototype.printDelay = 3000;
 
 /**
  * Update
@@ -210,7 +218,7 @@ Game.prototype.setSize = function()
     BaseGame.prototype.setSize.call(this);
 
     this.world.clear();
-    this.world = new World(this.size);
+    this.world = new World(this.size, null, this.random);
 
     this.bonusManager.setSize();
 };
@@ -260,7 +268,7 @@ Game.prototype.onStart = function()
 
     for (var avatar, i = this.avatars.items.length - 1; i >= 0; i--) {
         avatar = this.avatars.items[i];
-        setTimeout(avatar.printManager.start, 3000);
+        this.scheduleTimeout(avatar.printManager.start, this.printDelay);
     }
 
     this.world.activate();
