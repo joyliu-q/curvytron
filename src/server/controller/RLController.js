@@ -8,7 +8,6 @@ function RLController(server)
     this.server = server;
     this.manager = new RLManager(server);
 
-    this.authorize = this.authorize.bind(this);
     this.createSession = this.createSession.bind(this);
     this.getSessionState = this.getSessionState.bind(this);
     this.addBot = this.addBot.bind(this);
@@ -28,7 +27,6 @@ function RLController(server)
  */
 RLController.prototype.attachRoutes = function()
 {
-    this.server.app.all('/api/rl*', this.authorize);
     this.server.app.post('/api/rl/sessions', this.withJsonBody(this.createSession));
     this.server.app.get('/api/rl/sessions/:sessionId/state', this.getSessionState);
     this.server.app.post('/api/rl/sessions/:sessionId/bots', this.withJsonBody(this.addBot));
@@ -39,26 +37,6 @@ RLController.prototype.attachRoutes = function()
     this.server.app.post('/api/rl/sessions/:sessionId/actors/:actorId/set-and-hold', this.withJsonBody(this.setAndHoldAction));
     this.server.app.post('/api/rl/sessions/:sessionId/actors/:actorId/ready', this.readyActor);
     this.server.app.delete('/api/rl/sessions/:sessionId', this.deleteSession);
-};
-
-/**
- * Authorization middleware
- *
- * @param {Object} req
- * @param {Object} res
- * @param {Function} next
- */
-RLController.prototype.authorize = function(req, res, next)
-{
-    if (!this.manager.enabled()) {
-        return this.sendJson(res, 503, {error: 'RL API disabled. Configure rl.token or CURVYTRON_RL_API_TOKEN.'});
-    }
-
-    if (!this.manager.authorize(this.getBearerToken(req))) {
-        return this.sendJson(res, 401, {error: 'Unauthorized'});
-    }
-
-    next();
 };
 
 /**
@@ -94,24 +72,6 @@ RLController.prototype.withJsonBody = function(handler)
             return handler(req, res);
         }.bind(this));
     }.bind(this);
-};
-
-/**
- * Extract bearer token
- *
- * @param {Object} req
- *
- * @return {String|null}
- */
-RLController.prototype.getBearerToken = function(req)
-{
-    var header = req.headers.authorization || req.headers['x-curvytron-token'] || '';
-
-    if (/^Bearer /i.test(header)) {
-        return header.replace(/^Bearer /i, '').trim();
-    }
-
-    return header ? header.trim() : null;
 };
 
 /**

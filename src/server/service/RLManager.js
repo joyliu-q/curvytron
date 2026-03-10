@@ -8,53 +8,8 @@ function RLManager(server)
     this.server = server;
     this.sessions = new Collection([], 'id');
     this.stateBuilder = new RLStateBuilder();
-    this.token = this.getToken();
     this.sessionId = 0;
 }
-
-/**
- * Get the configured API token
- *
- * @return {String|null}
- */
-RLManager.prototype.getToken = function()
-{
-    if (this.server && this.server.config && this.server.config.rl && this.server.config.rl.token) {
-        return this.server.config.rl.token;
-    }
-
-    if (typeof(process) !== 'undefined' && process.env && process.env.CURVYTRON_RL_API_TOKEN) {
-        return process.env.CURVYTRON_RL_API_TOKEN;
-    }
-
-    return null;
-};
-
-/**
- * Is the RL API enabled?
- *
- * @return {Boolean}
- */
-RLManager.prototype.enabled = function()
-{
-    return !!this.token;
-};
-
-/**
- * Check a bearer token
- *
- * @param {String} value
- *
- * @return {Boolean}
- */
-RLManager.prototype.authorize = function(value)
-{
-    if (!this.enabled()) {
-        return false;
-    }
-
-    return value === this.token;
-};
 
 /**
  * Create a new RL session
