@@ -3,12 +3,29 @@
  *
  * @param {Server} server
  */
+/**
+ * Default session timeout: 5 minutes of inactivity
+ *
+ * @type {Number}
+ */
+RLManager.sessionTimeout = 5 * 60 * 1000;
+
+/**
+ * Cleanup sweep interval: every 60 seconds
+ *
+ * @type {Number}
+ */
+RLManager.cleanupInterval = 60 * 1000;
+
 function RLManager(server)
 {
     this.server = server;
     this.sessions = new Collection([], 'id');
     this.stateBuilder = new RLStateBuilder();
     this.sessionId = 0;
+
+    this.cleanup = this.cleanup.bind(this);
+    this.cleanupTimer = setInterval(this.cleanup, RLManager.cleanupInterval);
 }
 
 /**
@@ -38,7 +55,9 @@ RLManager.prototype.createSession = function(data)
         fixedStep: this.getFixedStep(data.fixed_step),
         warmupMs: this.getDelay(data.warmup_ms),
         warmdownMs: this.getDelay(data.warmdown_ms),
-        printDelayMs: this.getDelay(data.print_delay_ms)
+        printDelayMs: this.getDelay(data.print_delay_ms),
+        mapSize: typeof(data.map_size) === 'number' ? data.map_size : undefined,
+        autoAdvance: data.auto_advance !== false
     });
 
     this.sessions.add(session);
@@ -60,7 +79,7 @@ RLManager.prototype.createTrainingRoom = function(data)
     room.manualGame = true;
     room.fixedStep = this.getFixedStep(data.fixed_step);
     room.randomGenerator = new SeededRandom(typeof(data.seed) !== 'undefined' ? data.seed : room.name);
-    room.config.setOpen(false);
+    room.config.setOpen(true);
     room.config.setMaxScore(typeof(data.max_score) !== 'undefined' ? data.max_score : 1);
 
     if (typeof(data.bonus_rate) !== 'undefined') {
@@ -219,4 +238,25 @@ RLManager.prototype.nextSessionId = function()
     this.sessionId++;
 
     return 'rl:' + this.sessionId;
+};
+
+/**
+ * Remove sessions that have been inactive for longer than the timeout
+ */
+RLManager.prototype.cleanup = function()
+{
+    var now = Date.now(),
+        timeout = RLManager.sessionTimeout,
+        stale = [];
+
+    for (var i = 0; i < this.sessions.items.length; i++) {
+        if (now - this.sessions.items[i].lastActivityAt > timeout) {
+            stale.push(this.sessions.items[i]);
+        }
+    }
+
+    for (var j = 0; j < stale.length; j++) {
+        console.log('Cleaning up inactive RL session %s (idle %ds)', stale[j].id, Math.round((now - stale[j].lastActivityAt) / 1000));
+        this.removeSession(stale[j]);
+    }
 };

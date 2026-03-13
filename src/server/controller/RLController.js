@@ -398,3 +398,109 @@ RLController.prototype.sendJson = function(res, status, body)
     res.set('Content-Type', 'application/json');
     res.send(JSON.stringify(body));
 };
+
+/**
+ * Handle a WebSocket upgrade request for the RL API
+ *
+ * @param {Object} request
+ * @param {Object} socket
+ * @param {Object} head
+ */
+RLController.prototype.onWebSocketUpgrade = function(request, socket, head)
+{
+    var WebSocket = require('faye-websocket');
+    var websocket = new WebSocket(request, socket, head, ['websocket'], {ping: 30});
+    var parsed = require('url').parse(request.url, true);
+    var sessionId = parsed.query.session;
+    var token = parsed.query.token;
+
+    // Validate token if one is configured
+    if (this.server.config.rl && this.server.config.rl.token && this.server.config.rl.token !== token) {
+        websocket.send(JSON.stringify({type: 'error', message: 'Invalid token'}));
+        websocket.close();
+
+        return;
+    }
+
+    var session = this.manager.getSession(sessionId);
+
+    if (!session) {
+        websocket.send(JSON.stringify({type: 'error', message: 'Unknown session'}));
+        websocket.close();
+
+        return;
+    }
+
+    this.attachWebSocket(session, websocket);
+};
+
+/**
+ * Attach a WebSocket to a session and wire up message handling
+ *
+ * @param {RLSession} session
+ * @param {Object} websocket
+ */
+RLController.prototype.attachWebSocket = function(session, websocket)
+{
+    session.wsClients.push(websocket);
+
+    websocket.on('message', function(event) {
+        var msg;
+
+        try {
+            msg = JSON.parse(event.data);
+        } catch (e) {
+            websocket.send(JSON.stringify({type: 'error', message: 'Invalid JSON'}));
+
+            return;
+        }
+
+        var result;
+
+        switch (msg.type) {
+            case 'action':
+                session.setAction(msg.actor_id, msg.action);
+                websocket.send(JSON.stringify({type: 'action_ack'}));
+                break;
+
+            case 'hold':
+                session.setAndHold(msg.actor_id, msg.action, msg.ticks);
+                websocket.send(JSON.stringify({type: 'action_ack'}));
+                break;
+
+            case 'step':
+                result = session.step(msg.actions);
+                websocket.send(JSON.stringify({type: 'state', data: result}));
+                break;
+
+            case 'start':
+                result = session.startEpisode();
+                websocket.send(JSON.stringify({type: 'state', data: result}));
+                break;
+
+            case 'reset':
+                result = session.reset();
+                websocket.send(JSON.stringify({type: 'state', data: result}));
+                break;
+
+            case 'get_state':
+                result = session.buildState({gridWidth: msg.grid_width, gridHeight: msg.grid_height});
+                websocket.send(JSON.stringify({type: 'state', data: result}));
+                break;
+
+            default:
+                websocket.send(JSON.stringify({type: 'error', message: 'Unknown message type'}));
+                break;
+        }
+    });
+
+    websocket.on('close', function() {
+        var index = session.wsClients.indexOf(websocket);
+
+        if (index !== -1) {
+            session.wsClients.splice(index, 1);
+        }
+    });
+
+    websocket.send(JSON.stringify({type: 'connected', session_id: session.id}));
+};

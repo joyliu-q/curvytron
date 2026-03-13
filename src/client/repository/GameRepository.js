@@ -36,6 +36,7 @@ function GameRepository(client, parent, sound, notifier)
     this.onEnd        = this.onEnd.bind(this);
     this.onLeave      = this.onLeave.bind(this);
     this.onSpectate   = this.onSpectate.bind(this);
+    this.onTrailSync  = this.onTrailSync.bind(this);
 }
 
 GameRepository.prototype = Object.create(EventEmitter.prototype);
@@ -85,6 +86,7 @@ GameRepository.prototype.attachEvents = function()
     this.client.on('end', this.onEnd);
     this.client.on('game:leave', this.onLeave);
     this.client.on('spectate', this.onSpectate);
+    this.client.on('trail:sync', this.onTrailSync);
 };
 
 /**
@@ -109,6 +111,7 @@ GameRepository.prototype.detachEvents = function()
     this.client.off('end', this.onEnd);
     this.client.off('game:leave', this.onLeave);
     this.client.off('spectate', this.onSpectate);
+    this.client.off('trail:sync', this.onTrailSync);
 };
 
 /**
@@ -365,6 +368,7 @@ GameRepository.prototype.onSpectate = function(e)
 {
     var data = e.detail;
 
+    this.game.spectating = true;
     this.game.maxScore = data.maxScore;
 
     for (var i = this.game.avatars.items.length - 1; i >= 0; i--) {
@@ -383,4 +387,50 @@ GameRepository.prototype.onSpectate = function(e)
     }
 
     this.emit('spectate');
+};
+
+/**
+ * On trail sync (receive trail history for a spectated avatar)
+ */
+GameRepository.prototype.onTrailSync = function(e)
+{
+    var data = e.detail,
+        avatar = this.game.avatars.getById(data.avatar),
+        points = data.points,
+        segment, prev, dx, dy, dist, maxGap, i;
+
+    if (!avatar || !points || !points.length || !this.game.background) {
+        return;
+    }
+
+    // Max distance between consecutive trail points before starting a new segment
+    maxGap = avatar.radius * 4;
+    segment = [];
+
+    for (i = 0; i < points.length; i++) {
+        var px = this.compressor.decompress(points[i].x),
+            py = this.compressor.decompress(points[i].y);
+
+        if (segment.length > 0) {
+            prev = segment[segment.length - 1];
+            dx = px - prev[0];
+            dy = py - prev[1];
+            dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist > maxGap) {
+                // Draw current segment and start a new one
+                if (segment.length > 1) {
+                    this.game.background.drawLineScaled(segment, avatar.width, avatar.color, 'round');
+                }
+                segment = [];
+            }
+        }
+
+        segment.push([px, py]);
+    }
+
+    // Draw the final segment
+    if (segment.length > 1) {
+        this.game.background.drawLineScaled(segment, avatar.width, avatar.color, 'round');
+    }
 };

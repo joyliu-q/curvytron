@@ -18,10 +18,13 @@ import random
 import re
 import shutil
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
+from urllib.parse import urlencode
 
 import requests
+import websocket  # websocket-client package
 
 from common import (
     ACTIONS, MAX_STEPS, ESC, CLEAR_SCREEN, HIDE_CURSOR, SHOW_CURSOR,
@@ -34,8 +37,6 @@ DEFAULT_LLM_ENDPOINT = "https://joyliu-q--curvytron-player-curvytronplayer.us-ea
 # How many game ticks to hold each LLM action before asking again
 DEFAULT_HOLD_TICKS = 3
 
-# Smaller grid sent to the LLM (saves tokens; display grid stays full-res)
-LLM_GRID_SIZE = 32
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ The board is an ASCII grid where:
 - Uppercase letters (A, B, …) = player head positions
 - Lowercase letters = bonuses (power-ups) on the board
 
-PLAY DEFENSIVELY. DO NOT GO STRAIGHT FOR MORE THAN 10 TICKS.
+PLAY DEFENSIVELY. TRY TO SURVIVE.
 
 ## Response format
 
@@ -233,7 +234,7 @@ def choose_action_llm(llm_endpoint, state, my_player_id, my_marker, conversation
         payload = {
             "messages": messages,
             "max_tokens": 50,
-            "temperature": 0.8,
+            "temperature": 0.0, # no randomness
             "guided_choice": ACTIONS,
             # Disable Qwen3 thinking mode — we just need one word
             "chat_template_kwargs": {"enable_thinking": False},
@@ -254,18 +255,38 @@ def choose_action_llm(llm_endpoint, state, my_player_id, my_marker, conversation
         return random.choice(ACTIONS), f"(fallback: {e})"
 
 
-# ── Low-res board for LLM ────────────────────────────────────────────────────
+# ── WebSocket helpers ────────────────────────────────────────────────────────
 
-def get_llm_board(base, headers, session_id):
-    """Fetch a separate low-res occupancy grid to send to the LLM."""
-    resp = requests.get(
-        f"{base}/api/rl/sessions/{session_id}/state",
-        params={"grid_width": LLM_GRID_SIZE, "grid_height": LLM_GRID_SIZE},
-        headers=headers,
-    )
-    if resp.status_code == 200:
-        return resp.json().get("occupancy")
-    return None
+def connect_ws(base, session_id, token=None):
+    """Open a WebSocket to the RL session and return (ws, initial_state)."""
+    ws_url = base.replace("https://", "wss://").replace("http://", "ws://")
+    params = {"session": session_id}
+    if token:
+        params["token"] = token
+    ws_url += f"/api/rl/ws?{urlencode(params)}"
+    ws = websocket.create_connection(ws_url, timeout=30)
+    ack = json.loads(ws.recv())
+    if ack.get("type") != "connected":
+        raise RuntimeError(f"WS handshake failed: {ack}")
+    return ws
+
+
+def drain_ws(ws):
+    """Read all pending WS messages, return the latest state (or None)."""
+    latest = None
+    ws.settimeout(0)
+    try:
+        while True:
+            raw = ws.recv()
+            msg = json.loads(raw)
+            if msg.get("type") == "state":
+                latest = msg["data"]
+    except (websocket.WebSocketTimeoutException, BlockingIOError):
+        pass
+    finally:
+        ws.settimeout(30)
+    return latest
+
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -280,7 +301,7 @@ def main():
 
     hold_ticks = max(1, args.hold_ticks)
 
-    base, headers, session_id, is_creator, my_actor_id, my_player_id, bot_name = setup_session(args)
+    base, headers, session_id, is_creator, my_actor_id, my_player_id, bot_name, spectate_url = setup_session(args)
 
     # Figure out our marker (A, B, etc.)
     state = get_state(base, headers, session_id)
@@ -315,84 +336,126 @@ def main():
     sys.stdout.write(HIDE_CURSOR + CLEAR_SCREEN)
     sys.stdout.flush()
 
+    # Try WebSocket for fast action/state communication; fall back to HTTP
+    token = args.token or None
+    ws = None
+    try:
+        ws = connect_ws(base, session_id, token)
+    except Exception as e:
+        print(f"WebSocket connection failed ({e}), using HTTP fallback")
+
+    # Shared mutable state for the receiver thread
+    latest_state = {"state": state, "lock": threading.Lock()}
+
+    if ws:
+        def ws_receiver():
+            """Background thread: receive state pushes and keep latest_state up to date."""
+            try:
+                while True:
+                    raw = ws.recv()
+                    if raw is None:
+                        break
+                    msg = json.loads(raw)
+                    if msg.get("type") == "state":
+                        with latest_state["lock"]:
+                            latest_state["state"] = msg["data"]
+            except Exception:
+                pass
+
+        receiver_thread = threading.Thread(target=ws_receiver, daemon=True)
+        receiver_thread.start()
+
+    def get_latest_state():
+        if ws:
+            with latest_state["lock"]:
+                return latest_state["state"]
+        return get_state(base, headers, session_id)
+
+    def send_action(action):
+        """Send an action over WebSocket, or fall back to HTTP."""
+        if ws:
+            ws.send(json.dumps({
+                "type": "action",
+                "actor_id": my_actor_id,
+                "action": action,
+            }))
+        else:
+            requests.post(
+                f"{base}/api/rl/sessions/{session_id}/actors/{my_actor_id}/action",
+                json={"action": action},
+                headers=headers,
+            )
+
     def request_llm(st):
-        """Submit an LLM request and return the future."""
-        board = get_llm_board(base, headers, session_id)
-        return executor.submit(
-            choose_action_llm,
-            args.llm_endpoint, st, my_player_id, my_marker,
-            conversation_history, board,
-        )
+        """Submit an LLM request in background. Uses state occupancy directly
+        instead of a separate HTTP board fetch to minimize latency."""
+        def _do_llm():
+            occ = st.get("occupancy")
+            return choose_action_llm(
+                args.llm_endpoint, st, my_player_id, my_marker,
+                conversation_history, occ,
+            )
+        return executor.submit(_do_llm)
 
     try:
         if is_creator:
+            # Start the episode via HTTP (reliable even without WS)
             resp = requests.post(f"{base}/api/rl/sessions/{session_id}/start", headers=headers)
             if resp.status_code != 200:
                 print(f"Failed to start episode: {resp.status_code} {resp.text}")
                 sys.exit(1)
             state = resp.json()
-            render_frame(state, my_player_id, 0, "creator (llm) waiting...", action_log_lines())
+            with latest_state["lock"]:
+                latest_state["state"] = state
+            render_frame(state, my_player_id, 0, "creator (llm) waiting...", action_log_lines(), spectate_url=spectate_url)
 
             step = 0
-            # Pre-fetch the first LLM action and BLOCK until it arrives
             next_future = request_llm(state)
 
             while step < MAX_STEPS and not state.get("done", False):
-                # Block-wait for the LLM to decide
-                render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines())
-                current_action, raw_reply = next_future.result()  # blocks here
+                render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines(), spectate_url=spectate_url)
+                current_action, raw_reply = next_future.result()
                 log_action(step, current_action, raw_reply)
 
-                # Step the game with the chosen action for hold_ticks
-                for _ in range(hold_ticks):
-                    if state.get("done", False):
-                        break
-                    resp = requests.post(
-                        f"{base}/api/rl/sessions/{session_id}/step",
-                        json={"actions": {str(my_actor_id): current_action}},
-                        headers=headers,
-                    )
-                    if resp.status_code != 200:
-                        break
-                    state = resp.json()
-                    step += 1
-                    render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines())
+                # Send action and immediately start next LLM call in parallel
+                send_action(current_action)
+                state = get_latest_state()
+                step += 1
 
-                # Pre-fetch the NEXT action in background while we loop back
                 if not state.get("done", False):
                     next_future = request_llm(state)
 
-            render_frame(state, my_player_id, step, "llm [done]", action_log_lines())
+                render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines(), spectate_url=spectate_url)
+
+            render_frame(state, my_player_id, step, "llm [done]", action_log_lines(), spectate_url=spectate_url)
             requests.delete(f"{base}/api/rl/sessions/{session_id}", headers=headers)
 
         else:
-            state = get_state(base, headers, session_id)
             step = 0
             next_future = request_llm(state)
 
             while step < MAX_STEPS and not state.get("done", False):
-                # Block-wait for the LLM to decide
-                render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines())
-                current_action, raw_reply = next_future.result()  # blocks here
+                render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines(), spectate_url=spectate_url)
+                current_action, raw_reply = next_future.result()
                 log_action(step, current_action, raw_reply)
 
-                requests.post(
-                    f"{base}/api/rl/sessions/{session_id}/actors/{my_actor_id}/action",
-                    json={"action": current_action},
-                    headers=headers,
-                )
-                time.sleep(0.01)
-                state = get_state(base, headers, session_id)
+                send_action(current_action)
+                state = get_latest_state()
                 step += 1
-                render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines())
 
-                # Pre-fetch next action
                 if not state.get("done", False):
                     next_future = request_llm(state)
 
-            render_frame(state, my_player_id, step, "llm [done]", action_log_lines())
+                render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines(), spectate_url=spectate_url)
+
+            render_frame(state, my_player_id, step, "llm [done]", action_log_lines(), spectate_url=spectate_url)
 
     finally:
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
         executor.shutdown(wait=False)
         sys.stdout.write(SHOW_CURSOR + f"\n{ESC}[{shutil.get_terminal_size((100, 40)).lines}H\n")
         sys.stdout.flush()

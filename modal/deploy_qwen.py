@@ -58,8 +58,8 @@ image = (
 
 @app.cls(
     image=image,
-    gpu="H100",
-    min_containers=3,
+    gpu="T4",
+    min_containers=1,
     scaledown_window=15 * MINUTES,
     startup_timeout=15 * MINUTES,
     volumes={
@@ -100,8 +100,8 @@ class CurvytronPlayer:
             "--override-generation-config",
             '{"enable_thinking": false}',
         ]
-        print(" ".join(cmd))
-        self._vllm_process = subprocess.Popen(" ".join(cmd), shell=True)
+        print(cmd)
+        self._vllm_process = subprocess.Popen(cmd)
 
         # Wait for vLLM to be ready
         self._wait_for_port(VLLM_PORT, timeout=600)

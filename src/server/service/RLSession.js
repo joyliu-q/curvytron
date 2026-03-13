@@ -23,6 +23,8 @@ function RLSession(manager, id, mode, room, options)
     this.warmupMs = options.warmupMs;
     this.warmdownMs = options.warmdownMs;
     this.printDelayMs = options.printDelayMs;
+    this.mapSize = options.mapSize;
+    this.autoAdvance = typeof(options.autoAdvance) !== 'undefined' ? options.autoAdvance : true;
     this.actors = new Collection([], 'id');
     this.done = false;
     this.lastResult = {
@@ -33,10 +35,38 @@ function RLSession(manager, id, mode, room, options)
     this.terminalSnapshot = null;
     this.lastTick = 0;
     this.currentGame = null;
+    this.autoAdvanceTimer = null;
+    this.lastActivityAt = Date.now();
+
+    this.wsClients = [];
 
     this.onRoundEnd = this.onRoundEnd.bind(this);
     this.onGameEnd = this.onGameEnd.bind(this);
 }
+
+/**
+ * Broadcast current state to all connected WebSocket clients
+ */
+RLSession.prototype.broadcastState = function()
+{
+    var message = JSON.stringify({ type: "state", data: this.buildState() });
+
+    for (var i = this.wsClients.length - 1; i >= 0; i--) {
+        try {
+            this.wsClients[i].send(message);
+        } catch (e) {
+            this.wsClients.splice(i, 1);
+        }
+    }
+};
+
+/**
+ * Update the last activity timestamp
+ */
+RLSession.prototype.touch = function()
+{
+    this.lastActivityAt = Date.now();
+};
 
 /**
  * Create and attach a bot actor
@@ -47,6 +77,8 @@ function RLSession(manager, id, mode, room, options)
  */
 RLSession.prototype.addBot = function(data)
 {
+    this.touch();
+
     var client = new BotClient(data.name),
         player = null,
         actor;
@@ -100,6 +132,8 @@ RLSession.prototype.getActor = function(actorId)
  */
 RLSession.prototype.startEpisode = function()
 {
+    this.touch();
+
     if (this.room.game) {
         return this.buildState();
     }
@@ -122,8 +156,21 @@ RLSession.prototype.startEpisode = function()
     this.room.newGame();
     this.attachGame(this.room.game);
 
+    if (typeof(this.mapSize) === 'number' && this.mapSize > 0) {
+        this.room.game.size = this.mapSize;
+        this.room.game.setSize();
+        this.room.game.size = this.mapSize;
+    }
+
     if (typeof(this.warmupMs) === 'number') {
-        this.room.game.warmupTime = this.warmupMs;
+        // If there are human players in the room (more players than bot actors),
+        // enforce at least the default warmup so the human has time to orient
+        var hasHumans = this.room.players.count() > this.actors.items.length;
+        if (hasHumans && this.warmupMs < BaseGame.prototype.warmupTime) {
+            this.room.game.warmupTime = BaseGame.prototype.warmupTime;
+        } else {
+            this.room.game.warmupTime = this.warmupMs;
+        }
     }
 
     if (typeof(this.warmdownMs) === 'number') {
@@ -139,7 +186,50 @@ RLSession.prototype.startEpisode = function()
         this.actors.items[i].client.emit('ready');
     }
 
+    if (this.autoAdvance) {
+        this.startAutoAdvance();
+    }
+
     return this.buildState();
+};
+
+/**
+ * Start auto-advancing the game at a fixed framerate
+ */
+RLSession.prototype.startAutoAdvance = function()
+{
+    this.stopAutoAdvance();
+
+    var self = this;
+    var interval = this.fixedStep || 16;
+
+    this.autoAdvanceTimer = setInterval(function () {
+        if (!self.room.game || !self.room.game.manual || self.done) {
+            self.stopAutoAdvance();
+
+            return;
+        }
+
+        self.room.game.advance(1);
+        self.broadcastState();
+
+        if (self.done) {
+            self.broadcastState();
+            self.stopAutoAdvance();
+            self.drainGame();
+        }
+    }, interval);
+};
+
+/**
+ * Stop auto-advancing
+ */
+RLSession.prototype.stopAutoAdvance = function()
+{
+    if (this.autoAdvanceTimer) {
+        clearInterval(this.autoAdvanceTimer);
+        this.autoAdvanceTimer = null;
+    }
 };
 
 /**
@@ -181,9 +271,14 @@ RLSession.prototype.detachGame = function()
  */
 RLSession.prototype.step = function(actions)
 {
+    this.touch();
+
     if (!this.room.game || !this.room.game.manual) {
         return this.buildState();
     }
+
+    // Pause auto-advance while stepping synchronously
+    this.stopAutoAdvance();
 
     actions = actions || {};
 
@@ -200,6 +295,11 @@ RLSession.prototype.step = function(actions)
         this.drainGame();
 
         return this.terminalSnapshot ? this.terminalSnapshot : this.buildState();
+    }
+
+    // Resume auto-advance for spectators
+    if (this.autoAdvance) {
+        this.startAutoAdvance();
     }
 
     return this.buildState();
@@ -236,6 +336,8 @@ RLSession.prototype.resolveActorAction = function(actor, actions)
  */
 RLSession.prototype.setAction = function(actorId, action)
 {
+    this.touch();
+
     var actor = this.getActor(actorId);
 
     return actor ? actor.controller.setAction(action) : null;
@@ -252,6 +354,8 @@ RLSession.prototype.setAction = function(actorId, action)
  */
 RLSession.prototype.setAndHold = function(actorId, action, ticks)
 {
+    this.touch();
+
     var actor = this.getActor(actorId);
 
     return actor ? actor.controller.setAndHold(action, ticks) : null;
@@ -287,6 +391,7 @@ RLSession.prototype.markReady = function(actorId)
  */
 RLSession.prototype.reset = function()
 {
+    this.touch();
     this.drainGame();
 
     return this.startEpisode();
@@ -328,6 +433,7 @@ RLSession.prototype.buildState = function(options)
  */
 RLSession.prototype.close = function()
 {
+    this.stopAutoAdvance();
     this.detachGame();
 
     for (var i = this.actors.items.length - 1; i >= 0; i--) {
@@ -335,6 +441,13 @@ RLSession.prototype.close = function()
     }
 
     this.actors.clear();
+
+    for (var j = 0; j < this.wsClients.length; j++) {
+        try {
+            this.wsClients[j].close();
+        } catch (e) {}
+    }
+    this.wsClients = [];
 
     // Remove training room from the repository
     if (this.mode === 'training') {
@@ -350,9 +463,11 @@ RLSession.prototype.close = function()
 RLSession.prototype.onRoundEnd = function(data)
 {
     this.done = true;
+    this.stopAutoAdvance();
     this.lastResult.round_winner_player_id = data.winner ? data.winner.id : null;
     this.lastResult.alive_player_ids = data.winner ? [data.winner.id] : [];
     this.terminalSnapshot = this.buildState();
+    this.broadcastState();
 };
 
 /**

@@ -8,6 +8,7 @@ function Game(room)
     BaseGame.call(this, room);
 
     this.animations = [];
+    this.spectating = false;
 
     this.onResize = this.onResize.bind(this);
     this.onDie    = this.onDie.bind(this);

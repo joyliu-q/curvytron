@@ -10,3 +10,4 @@ config.json
 *.sublime-*
 *.pyc
 __pycache__/*
+.claude/*

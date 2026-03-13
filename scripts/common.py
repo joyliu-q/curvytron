@@ -24,9 +24,12 @@ DEFAULT_URL = "https://joyliu-q--curvytron-curvytron.us-east.modal.direct"
 ESC = "\033"
 CLEAR_SCREEN = f"{ESC}[2J"
 HOME = f"{ESC}[H"
+CLEAR_TO_EOL = f"{ESC}[K"
+CLEAR_TO_EOS = f"{ESC}[J"
 RESET = f"{ESC}[0m"
 BOLD = f"{ESC}[1m"
 DIM = f"{ESC}[2m"
+UNDERLINE = f"{ESC}[4m"
 HIDE_CURSOR = f"{ESC}[?25l"
 SHOW_CURSOR = f"{ESC}[?25h"
 
@@ -66,11 +69,11 @@ def colorize_board(ascii_board, players):
                 parts.append(f"{BONUS_COLOR}{ch}{RESET}")
             else:
                 parts.append(ch)
-        colored.append("".join(parts))
+        colored.append("".join(parts) + CLEAR_TO_EOL)
     return "\n".join(colored)
 
 
-def build_status_bar(state, my_player_id, step, role):
+def build_status_bar(state, my_player_id, step, role, spectate_url=None):
     """Build a status bar showing game observations."""
     tick = state.get("tick", 0)
     done = state.get("done", False)
@@ -84,6 +87,9 @@ def build_status_bar(state, my_player_id, step, role):
 
     term_w = shutil.get_terminal_size((100, 40)).columns
     lines.append(f"{DIM}{'─' * term_w}{RESET}")
+
+    if spectate_url:
+        lines.append(f" {BOLD}Spectate:{RESET} {UNDERLINE}{spectate_url}{RESET}")
 
     status = f"{BOLD}{'GAME OVER' if done else 'PLAYING'}{RESET}"
     info = (
@@ -155,10 +161,10 @@ def build_status_bar(state, my_player_id, step, role):
         me_tag = " (you!)" if winner == my_player_id else ""
         lines.append(f"  {BOLD}Winner: {winner_name}{me_tag}{RESET}")
 
-    return "\n".join(lines)
+    return "\n".join(line + CLEAR_TO_EOL for line in lines)
 
 
-def render_frame(state, my_player_id, step, role, extra_lines=None):
+def render_frame(state, my_player_id, step, role, extra_lines=None, spectate_url=None):
     """Clear screen and draw the board + status bar."""
     buf = HOME
 
@@ -168,19 +174,15 @@ def render_frame(state, my_player_id, step, role, extra_lines=None):
 
     players = state.get("players", [])
     board_lines = colorize_board(ascii_board, players) if ascii_board else ""
-    status = build_status_bar(state, my_player_id, step, role)
+    status = build_status_bar(state, my_player_id, step, role, spectate_url)
 
     buf += board_lines + "\n" + status
 
     if extra_lines:
-        buf += "\n" + "\n".join(extra_lines)
+        buf += "\n" + "\n".join(line + CLEAR_TO_EOL for line in extra_lines)
 
-    term_h = shutil.get_terminal_size((100, 40)).lines
-    extra_count = len(extra_lines) if extra_lines else 0
-    used = ascii_board.count("\n") + 1 + status.count("\n") + 1 + extra_count
-    if used < term_h:
-        blank_line = " " * shutil.get_terminal_size((100, 40)).columns
-        buf += "\n" + "\n".join(blank_line for _ in range(term_h - used - 1))
+    # Clear everything below the rendered content to avoid leftover artifacts
+    buf += CLEAR_TO_EOS
 
     sys.stdout.write(buf)
     sys.stdout.flush()
@@ -203,9 +205,9 @@ def wait_for_server(base):
     print(" connected!")
 
 
-def find_or_create_session(base, headers, room, grid):
+def find_or_create_session(base, headers, room, grid, auto_advance=False, map_size=None):
     """Create a session, or return the existing one if one already exists for this room."""
-    resp = requests.post(f"{base}/api/rl/sessions", json={
+    body = {
         "seed": room,
         "grid_width": grid,
         "grid_height": grid,
@@ -213,7 +215,11 @@ def find_or_create_session(base, headers, room, grid):
         "warmup_ms": 0,
         "warmdown_ms": 0,
         "print_delay_ms": 0,
-    }, headers=headers)
+        "auto_advance": auto_advance,
+    }
+    if map_size is not None:
+        body["map_size"] = map_size
+    resp = requests.post(f"{base}/api/rl/sessions", json=body, headers=headers)
     if resp.status_code not in (200, 201):
         print(f"Failed to create/find session: {resp.status_code} {resp.text}")
         sys.exit(1)
@@ -268,7 +274,9 @@ def setup_session(args):
 
     wait_for_server(base)
 
-    session, is_creator = find_or_create_session(base, headers, args.room, args.grid)
+    auto_advance = not getattr(args, 'no_auto_advance', False)
+    map_size = getattr(args, 'map_size', None)
+    session, is_creator = find_or_create_session(base, headers, args.room, args.grid, auto_advance=auto_advance, map_size=map_size)
     session_id = session["session_id"]
     if is_creator:
         print(f"Session created: {session_id}")
@@ -278,8 +286,9 @@ def setup_session(args):
     room_name = session.get("room_name", "")
     if not room_name and session_id.startswith("rl:"):
         room_name = f"rl-session-{session_id.split(':')[1]}"
-    if room_name:
-        print(f"Spectate live: {base}/#/room/{room_name}")
+    spectate_url = f"{base}/#/room/{room_name}" if room_name else None
+    if spectate_url:
+        print(f"Spectate live: {spectate_url}")
 
     bot_name = args.name
     if not bot_name:
@@ -293,7 +302,7 @@ def setup_session(args):
     if actor is None and not is_creator:
         print(f"Stale session detected — deleting {session_id} and creating a fresh one...")
         delete_session(base, headers, session_id)
-        session, is_creator = find_or_create_session(base, headers, args.room, args.grid)
+        session, is_creator = find_or_create_session(base, headers, args.room, args.grid, auto_advance=auto_advance, map_size=map_size)
         session_id = session["session_id"]
         print(f"Session created: {session_id}")
         actor = add_bot(base, headers, session_id, bot_name, color)
@@ -308,7 +317,7 @@ def setup_session(args):
 
     wait_for_players(base, headers, session_id)
 
-    return base, headers, session_id, is_creator, my_actor_id, my_player_id, bot_name
+    return base, headers, session_id, is_creator, my_actor_id, my_player_id, bot_name, spectate_url
 
 
 def add_common_args(parser):
@@ -318,3 +327,6 @@ def add_common_args(parser):
     parser.add_argument("--token", default=os.environ.get("CURVYTRON_RL_API_TOKEN", ""), help="API token")
     parser.add_argument("--name", default=None, help="Bot name (auto-generated if omitted)")
     parser.add_argument("--grid", type=int, default=88, help="Grid width and height")
+    parser.add_argument("--map-size", type=int, default=None, help="Game world size (default: auto based on player count)")
+    parser.add_argument("--no-auto-advance", action="store_true", default=False,
+                        help="Disable server auto-advance (bot drives ticks manually via /step)")

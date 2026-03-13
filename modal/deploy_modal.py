@@ -21,7 +21,18 @@ curvytron_image = (
     .add_local_dir(
         PROJECT_DIR,
         remote_path="/app",
-        ignore=["node_modules", ".git", "__pycache__", "modal", "uv.lock", ".claude"],
+        ignore=["node_modules", ".git", "__pycache__", "modal", "uv.lock", ".claude", "scripts", "src"],
+        copy=True
+    )
+    .run_commands(
+        # Install deps inside the image so they're cached and don't re-run on every container start.
+        # --force handles conflicts with stale .bin symlinks (e.g. sass).
+        "cd /app && npm install --ignore-scripts --force && bower install --allow-root -F",
+    )
+    .add_local_dir(
+        f"{PROJECT_DIR}/src",
+        remote_path="/app/src",
+        copy=True
     )
 )
 
@@ -39,11 +50,6 @@ with curvytron_image.imports():
 class Curvytron:
     @modal.enter()
     def start(self):
-        # Install deps + build on container start (uses mounted source code)
-        subprocess.run(
-            "npm install --ignore-scripts && bower install --allow-root -F",
-            cwd="/app", shell=True, check=True,
-        )
         subprocess.run(
             "cp -n config.json.sample config.json",
             cwd="/app", shell=True, check=True,

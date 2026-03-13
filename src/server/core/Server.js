@@ -47,6 +47,10 @@ Server.prototype.authorizationHandler = function(request, socket, head)
         return socket.end();
     }
 
+    if (request.url && request.url.indexOf('/api/rl/ws') === 0) {
+        return this.rlController.onWebSocketUpgrade(request, socket, head);
+    }
+
     var websocket = new WebSocket(request, socket, head, ['websocket'], {ping: 30}),
         ip = request.headers['x-real-ip'] || request.connection.remoteAddress;
 

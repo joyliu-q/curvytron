@@ -237,6 +237,19 @@ GameController.prototype.attachSpectator = function(client)
                 bonus.constructor.name
             ]]);
         }
+
+        // Send trail history so spectators see accumulated trails
+        if (this.game.world) {
+            var trails = this.collectTrails();
+            for (var avatarId in trails) {
+                if (trails.hasOwnProperty(avatarId)) {
+                    events.push(['trail:sync', {
+                        avatar: parseInt(avatarId, 10),
+                        points: trails[avatarId]
+                    }]);
+                }
+            }
+        }
     } else {
         this.socketGroup.addEvent('round:end', this.game.roundWinner ? this.game.roundWinner.id : null);
     }
@@ -244,6 +257,58 @@ GameController.prototype.attachSpectator = function(client)
     events.push(['game:spectators', this.countSpectators()]);
 
     client.addEvents(events);
+};
+
+/**
+ * Collect trail body positions grouped by avatar id
+ *
+ * @return {Object}
+ */
+GameController.prototype.collectTrails = function()
+{
+    var trails = {},
+        seen = {},
+        islands = this.game.world.islands.items,
+        island, body, avatarId, j, k;
+
+    for (j = 0; j < islands.length; j++) {
+        island = islands[j];
+
+        for (k = 0; k < island.bodies.items.length; k++) {
+            body = island.bodies.items[k];
+
+            if (seen[body.id]) {
+                continue;
+            }
+
+            seen[body.id] = true;
+
+            if (!(body instanceof AvatarBody) || !body.data) {
+                continue;
+            }
+
+            avatarId = body.data.id;
+
+            if (!trails[avatarId]) {
+                trails[avatarId] = [];
+            }
+
+            trails[avatarId].push({
+                n: body.num,
+                x: this.compressor.compress(body.x),
+                y: this.compressor.compress(body.y)
+            });
+        }
+    }
+
+    // Sort each avatar's trail by body number for correct draw order
+    for (avatarId in trails) {
+        if (trails.hasOwnProperty(avatarId)) {
+            trails[avatarId].sort(function (a, b) { return a.n - b.n; });
+        }
+    }
+
+    return trails;
 };
 
 /**
