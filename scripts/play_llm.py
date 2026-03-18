@@ -33,39 +33,12 @@ from common import (
 )
 
 DEFAULT_LLM_ENDPOINT = "https://joyliu-q--curvytron-player-curvytronplayer.us-east.modal.direct/v1/chat/completions"
+from prompts import SYSTEM_PROMPT
 
 # How many game ticks to hold each LLM action before asking again
 DEFAULT_HOLD_TICKS = 3
 
 
-# ── Prompts ──────────────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = """\
-You are playing Curvytron, a multiplayer Snake/Tron-like game on a 2D grid.
-
-## Rules
-- You control a continuously moving avatar that leaves a trail behind it.
-- Each tick you choose one of three actions: "left", "straight", or "right".
-  - "left" turns your avatar left relative to its current heading.
-  - "straight" keeps your current heading.
-  - "right" turns your avatar right relative to its current heading.
-- If your avatar collides with any trail (yours or an opponent's), a wall, or \
-the border, you die.
-- The last player alive wins the round.
-
-## Board notation
-The board is an ASCII grid where:
-- "." = empty space (safe to move into)
-- "#" = wall / border / trail segment (deadly on contact)
-- Uppercase letters (A, B, …) = player head positions
-- Lowercase letters = bonuses (power-ups) on the board
-
-PLAY DEFENSIVELY. TRY TO SURVIVE.
-
-## Response format
-
-Respond with ONLY one word: left, straight, or right
-"""
 
 
 def build_turn_prompt(state, my_player_id, my_marker, llm_board=None):
@@ -296,10 +269,14 @@ def main():
     add_common_args(parser)
     parser.add_argument("--llm-endpoint", default=DEFAULT_LLM_ENDPOINT, help="LLM chat endpoint URL")
     parser.add_argument("--hold-ticks", type=int, default=DEFAULT_HOLD_TICKS,
-                        help="Game steps to hold each LLM action")
+                        help="Game steps to hold each LLM action (only used when --no-block)")
+    parser.add_argument("--no-block", dest="block_until_move", action="store_false",
+                        help="Don't block on LLM response; hold previous action for --hold-ticks instead")
+    parser.set_defaults(block_until_move=True)
     args = parser.parse_args()
 
     hold_ticks = max(1, args.hold_ticks)
+    block_until_move = args.block_until_move
 
     base, headers, session_id, is_creator, my_actor_id, my_player_id, bot_name, spectate_url = setup_session(args)
 
@@ -409,15 +386,16 @@ def main():
                 latest_state["state"] = state
             render_frame(state, my_player_id, 0, "creator (llm) waiting...", action_log_lines(), spectate_url=spectate_url)
 
-            step = 0
-            next_future = request_llm(state)
+        step = 0
+        next_future = request_llm(state)
 
+        if block_until_move:
+            # ── Blocking mode: wait for LLM before each tick ──
             while step < MAX_STEPS and not state.get("done", False):
                 render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines(), spectate_url=spectate_url)
                 current_action, raw_reply = next_future.result()
                 log_action(step, current_action, raw_reply)
 
-                # Send action and immediately start next LLM call in parallel
                 send_action(current_action)
                 state = get_latest_state()
                 step += 1
@@ -426,29 +404,34 @@ def main():
                     next_future = request_llm(state)
 
                 render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines(), spectate_url=spectate_url)
-
-            render_frame(state, my_player_id, step, "llm [done]", action_log_lines(), spectate_url=spectate_url)
-            requests.delete(f"{base}/api/rl/sessions/{session_id}", headers=headers)
-
         else:
-            step = 0
-            next_future = request_llm(state)
+            # ── Non-blocking mode: hold previous action while LLM thinks ──
+            current_action = "straight"
+            ticks_held = 0
 
             while step < MAX_STEPS and not state.get("done", False):
-                render_frame(state, my_player_id, step, "llm [thinking...]", action_log_lines(), spectate_url=spectate_url)
-                current_action, raw_reply = next_future.result()
-                log_action(step, current_action, raw_reply)
+                # Check if LLM has responded
+                if next_future.done():
+                    current_action, raw_reply = next_future.result()
+                    log_action(step, current_action, raw_reply)
+                    ticks_held = 0
 
                 send_action(current_action)
                 state = get_latest_state()
                 step += 1
+                ticks_held += 1
 
-                if not state.get("done", False):
-                    next_future = request_llm(state)
+                # Request new LLM decision after hold_ticks or when previous finished
+                if not state.get("done", False) and next_future.done():
+                    if ticks_held >= hold_ticks:
+                        next_future = request_llm(state)
 
-                render_frame(state, my_player_id, step, f"llm [{current_action}]", action_log_lines(), spectate_url=spectate_url)
+                status = f"llm [{current_action}] (hold {ticks_held}/{hold_ticks})"
+                render_frame(state, my_player_id, step, status, action_log_lines(), spectate_url=spectate_url)
 
-            render_frame(state, my_player_id, step, "llm [done]", action_log_lines(), spectate_url=spectate_url)
+        render_frame(state, my_player_id, step, "llm [done]", action_log_lines(), spectate_url=spectate_url)
+        if is_creator:
+            requests.delete(f"{base}/api/rl/sessions/{session_id}", headers=headers)
 
     finally:
         if ws:

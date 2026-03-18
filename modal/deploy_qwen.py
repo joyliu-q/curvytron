@@ -58,8 +58,8 @@ image = (
 
 @app.cls(
     image=image,
-    gpu="T4",
-    min_containers=1,
+    gpu="L4",
+    min_containers=MIN_CONTAINERS,
     scaledown_window=15 * MINUTES,
     startup_timeout=15 * MINUTES,
     volumes={
