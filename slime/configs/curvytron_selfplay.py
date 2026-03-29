@@ -1,4 +1,4 @@
-"""Configuration for Qwen3-4B curvytron self-play GRPO training."""
+"""Configuration for Qwen3-4B curvytron multi-agent self-play GRPO training."""
 
 from .base import (
     RLConfig,
@@ -37,8 +37,8 @@ def get_config() -> RLConfig:
             # GRPO algorithm
             {DEFAULT_GRPO_ARGS}
 
-            # Custom generate function — self-play curvytron rollout
-            --custom-generate-function-path curvytron.rollout.generate_curvytron_selfplay
+            # Custom generate function — multi-agent curvytron rollout
+            --custom-generate-function-path curvytron.multi_agent_rollout.generate_curvytron_multiagent
 
             # Data — seeds dataset (prompt is the game seed, label is unused)
             --prompt-data {{data_path}}/curvytron_seeds.jsonl
@@ -46,19 +46,20 @@ def get_config() -> RLConfig:
             --label-key label
             --rollout-shuffle
 
-            # No --rm-type: rewards are computed from game outcome inside
-            # the custom generate function. Setting an RM here would risk
-            # SLIME overwriting our game rewards after the rollout returns.
+            # Passthrough RM — rewards are already computed inside the custom
+            # generate function (multi-agent self-play). This prevents SLIME
+            # from trying to run its own RM and overwriting our game rewards.
+            --custom-rm-path curvytron.passthrough_rm.passthrough_rm
 
             # Rollout settings
             --num-rollout 1000
-            --rollout-batch-size 8
+            --rollout-batch-size 16
             --n-samples-per-prompt 1
             --rollout-max-context-len 4096
             --rollout-max-response-len 50
             --rollout-temperature 1
 
-            --global-batch-size 256
+            --global-batch-size 16
             --balance-data
 
             # SGLang

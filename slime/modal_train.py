@@ -2,26 +2,15 @@
 Unified SLIME GRPO training script for Modal.
 
 Usage:
-    # Sync training with Qwen 0.5B (multi-node)
-    modal run modal_train.py::train_multi_node --config qwen-0.5b-sync
+    modal run modal_train.py::train
 
-    # Async training with Qwen 4B (multi-node)
-    modal run modal_train.py::train_multi_node --config qwen-4b-async
-
-    # Single node training
-    modal run modal_train.py::train_single_node --config qwen-0.5b-sync
-
-    # Single node training with LoRA (using local slime repo)
-    USE_LOCAL_SLIME=/path/to/slime modal run modal_train.py::train_single_node --config qwen-4b-lora
+    USE_LOCAL_SLIME=/path/to/slime modal run modal_train.py::train
 
     # Download model
-    modal run modal_train.py::download_model --config qwen-4b-sync
+    modal run slime/modal_train.py::download_model --config qwen-4b-sync
 
     # Prepare dataset
-    modal run modal_train.py::prepare_dataset
-
-    # List available configs
-    modal run modal_train.py::list_available_configs
+    modal run slime/modal_train.py::prepare_curvytron_dataset
 
 Environment variables:
     USE_LOCAL_SLIME=/path     Path to local slime repo for development
@@ -74,6 +63,7 @@ image = (
     )
     .entrypoint([])
     .add_local_python_source("configs", copy=True)
+    .add_local_dir("slime/curvytron", remote_path="/root/curvytron", copy=True)
 )
 
 # Overlay local slime code for development
@@ -91,7 +81,7 @@ with image.imports():
 
 # Paths
 HF_CACHE_PATH = "/root/.cache/huggingface"
-DATA_PATH: Path = Path(f"{HF_CACHE_PATH}/processed")
+DATA_PATH: Path = Path("/data")
 CHECKPOINTS_PATH: Path = Path("/checkpoints")
 
 # Volumes
@@ -184,9 +174,12 @@ def generate_slime_cmd(
     import datetime
     import random
 
-    train_args = config.generate_train_args(DATA_PATH)
+    from huggingface_hub import snapshot_download
 
+    hf_model_path = snapshot_download(repo_id=config.model_id, local_files_only=True)
     checkpoint_dir = CHECKPOINTS_PATH / experiment_name
+    train_args = config.generate_train_args(hf_model_path, checkpoint_dir, DATA_PATH, is_infinite_run=False)
+
     train_args += f" --save {checkpoint_dir} --save-interval {config.save_steps if hasattr(config, 'save_steps') else 10}"
 
     # Add wandb args if API key is available
@@ -285,25 +278,6 @@ def download_model(
 
 
 
-
-@app.function(
-    image=image,
-    volumes={HF_CACHE_PATH: hf_cache_vol},
-    secrets=[modal.Secret.from_name("huggingface-secret")],
-    timeout=24 * 60 * 60,
-)
-def prepare_dataset():
-    """Download and prepare the Haiku dataset."""
-    from datasets import load_dataset
-
-    data_volume.reload()
-    dataset = load_dataset("zhuzilin/gsm8k")
-    dataset["train"].to_parquet(f"{DATA_PATH}/gsm8k/train.parquet")
-    dataset["test"].to_parquet(f"{DATA_PATH}/gsm8k/test.parquet")
-    data_volume.commit()
-    print("Dataset prepared successfully")
-
-
 @app.function(
     image=image,
     volumes={DATA_PATH.as_posix(): data_volume},
@@ -349,6 +323,7 @@ def list_available_configs():
     gpu="H100:8",
     volumes={
         HF_CACHE_PATH: hf_cache_vol,
+        DATA_PATH.as_posix(): data_volume,
         CHECKPOINTS_PATH.as_posix(): checkpoints_volume,
     },
     secrets=[
@@ -373,6 +348,7 @@ async def train(
     experiment_name = f"{run_name}-{model_short}-{timestamp}"
 
     await hf_cache_vol.reload.aio()
+    await data_volume.reload.aio()
     await checkpoints_volume.reload.aio()
 
     _init_ray(0, SINGLE_NODE_MASTER_ADDR, SINGLE_NODE_MASTER_ADDR, 1)
