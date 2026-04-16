@@ -261,12 +261,13 @@ async def run_training(
     timeout=24 * 60 * 60,
 )
 def download_model(
+    run_name: str = DEFAULT_CONFIG,
     revision: Optional[str] = None,
 ):
     """Download model from HuggingFace."""
     from huggingface_hub import snapshot_download
 
-    cfg = get_config()
+    cfg = get_config(run_name)
 
     path = snapshot_download(
         repo_id=cfg.model_id,
@@ -283,16 +284,16 @@ def download_model(
     volumes={DATA_PATH.as_posix(): data_volume},
     timeout=24 * 60 * 60,
 )
-def prepare_curvytron_dataset(num_seeds: int = 5000):
+def prepare_curvytron_dataset(num_seeds: int = 5000, force: bool = False):
     """Generate curvytron seed dataset for self-play GRPO training."""
     import json
 
     data_volume.reload()
     seeds_path = DATA_PATH / "curvytron_seeds.jsonl"
 
-    if seeds_path.exists():
+    if seeds_path.exists() and not force:
         lines = sum(1 for _ in open(seeds_path))
-        print(f"Dataset already exists: {seeds_path} ({lines} seeds)")
+        print(f"Dataset already exists: {seeds_path} ({lines} seeds). Use --force to regenerate.")
         return
 
     with open(seeds_path, "w") as f:
@@ -311,6 +312,95 @@ def list_available_configs():
     print("Available configs:")
     for name in list_configs():
         print(f"  - {name}")
+
+
+
+@app.function(
+    image=image,
+    gpu="H100:1",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+    ],
+    volumes={CHECKPOINTS_PATH.as_posix(): checkpoints_volume},
+)
+async def convert_checkpoint(
+    model_path: str,
+    iter_dir: str,
+    origin_hf_dir: str
+):
+    """Convert Megatron checkpoint to HuggingFace format."""
+    from huggingface_hub import snapshot_download
+    import glob
+    import os
+    import subprocess
+
+    await checkpoints_volume.reload.aio()
+
+    local_hf_dir = CHECKPOINTS_PATH / origin_hf_dir
+
+    if not local_hf_dir.exists():
+        snapshot_download(repo_id=f"Qwen/{origin_hf_dir}", local_dir=local_hf_dir)
+    else:
+        print(f"Model {origin_hf_dir} already downloaded.")
+
+    megatron_checkpoint_path = CHECKPOINTS_PATH / model_path / iter_dir
+    output_hf_path = CHECKPOINTS_PATH / model_path / f"{iter_dir}_hf"
+
+    # Find the conversion script — check known locations
+    candidates = [
+        "/root/tools/convert_torch_dist_to_hf.py",
+        *glob.glob("/root/**/convert_torch_dist_to_hf.py", recursive=True),
+        *glob.glob("/usr/**/convert_torch_dist_to_hf.py", recursive=True),
+        *glob.glob("/opt/**/convert_torch_dist_to_hf.py", recursive=True),
+    ]
+    script_path = None
+    for c in candidates:
+        if os.path.exists(c):
+            script_path = c
+            break
+    if script_path is None:
+        # List what's available for debugging
+        tools_contents = os.listdir("/root") if os.path.isdir("/root") else []
+        raise RuntimeError(
+            f"Conversion script not found. Searched: {candidates[:5]}\n"
+            f"/root contents: {tools_contents}"
+        )
+    print(f"Found conversion script at: {script_path}")
+
+    cmd = [
+        "python",
+        script_path,
+        "--input-dir",
+        str(megatron_checkpoint_path),
+        "--output-dir",
+        str(output_hf_path),
+        "--origin-hf-dir",
+        str(local_hf_dir),
+        "--force",
+    ]
+    print(f"Running conversion: {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        cwd="/root",
+        env={**os.environ, "PYTHONPATH": "/root/Megatron-LM:/root"},
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        print(result.stdout)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Checkpoint conversion failed.\n"
+            f"input-dir={megatron_checkpoint_path}\n"
+            f"output-dir={output_hf_path}\n"
+            f"origin-hf-dir={local_hf_dir}\n"
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}"
+        )
+
+    await checkpoints_volume.commit.aio()
+    print(f"Converted checkpoint saved to {output_hf_path}")
 
 
 # =============================================================================
@@ -337,8 +427,13 @@ def list_available_configs():
 )
 async def train(
     run_name: str = "curvytron-selfplay",
+    eval_games: int = 20,
 ):
-    """Single-node GRPO training on Modal."""
+    """Single-node GRPO training on Modal.
+
+    After training, converts the latest checkpoint to HF format and
+    evaluates it against previous checkpoints via curvytron self-play.
+    """
     from datetime import datetime
 
     cfg = get_config(run_name=run_name)
@@ -357,3 +452,71 @@ async def train(
         print(f"Dashboard URL: {tunnel.url}")
         print(f"Experiment: {experiment_name}")
         await run_training(cfg, 1, SINGLE_NODE_MASTER_ADDR, experiment_name)
+
+    # ── Post-training eval: latest checkpoint vs base model ────────────
+    if eval_games > 0:
+        print(f"\n{'='*60}")
+        print("Post-training eval: converting checkpoints and running games")
+        print(f"{'='*60}")
+
+        checkpoint_dir = CHECKPOINTS_PATH / experiment_name
+
+        # Find the latest iteration checkpoint
+        latest_iter_file = checkpoint_dir / "latest_checkpointed_iteration.txt"
+        if latest_iter_file.exists():
+            latest_iter = int(latest_iter_file.read_text().strip())
+        else:
+            # Find highest iter_* directory
+            import glob
+            iters = sorted(glob.glob(str(checkpoint_dir / "iter_*")))
+            if not iters:
+                print("No checkpoints found — skipping eval")
+                return
+            latest_iter = int(Path(iters[-1]).name.split("_")[1])
+
+        iter_dir = f"iter_{latest_iter:07d}"
+        hf_dir = f"{iter_dir}_hf"
+        hf_path = checkpoint_dir / hf_dir
+
+        # Convert latest checkpoint to HF if not already done
+        if not hf_path.exists():
+            print(f"Converting {experiment_name}/{iter_dir} to HF format...")
+            await convert_checkpoint.remote.aio(
+                model_path=experiment_name,
+                iter_dir=iter_dir,
+                origin_hf_dir=model_short,
+            )
+            await checkpoints_volume.reload.aio()
+
+        # Also convert an earlier checkpoint for comparison (if available)
+        # Find the earliest iter checkpoint
+        import glob
+        all_iters = sorted(glob.glob(str(checkpoint_dir / "iter_*")))
+        megatron_iters = [p for p in all_iters if not p.endswith("_hf")]
+
+        eval_pairs = []
+        # Always eval latest vs base model
+        eval_pairs.append((f"{experiment_name}/{hf_dir}", cfg.model_id))
+
+        # If we have an earlier checkpoint, eval latest vs earliest
+        if len(megatron_iters) >= 2:
+            early_iter_dir = Path(megatron_iters[0]).name
+            early_hf_dir = f"{early_iter_dir}_hf"
+            early_hf_path = checkpoint_dir / early_hf_dir
+            if not early_hf_path.exists():
+                print(f"Converting {experiment_name}/{early_iter_dir} to HF format...")
+                await convert_checkpoint.remote.aio(
+                    model_path=experiment_name,
+                    iter_dir=early_iter_dir,
+                    origin_hf_dir=model_short,
+                )
+                await checkpoints_volume.reload.aio()
+            eval_pairs.append((f"{experiment_name}/{hf_dir}", f"{experiment_name}/{early_hf_dir}"))
+
+        # Print eval commands the user can run separately
+        print(f"\n{'='*60}")
+        print("Run these eval commands manually:")
+        for current, baseline in eval_pairs:
+            print(f"  modal run slime/eval_selfplay.py::eval_vs_baseline "
+                  f"--current-path '{current}' --baseline-path '{baseline}' --num-games {eval_games}")
+        print(f"{'='*60}")

@@ -42,10 +42,10 @@ with curvytron_image.imports():
 
 
 @app.cls(
-    image=curvytron_image,
+    image=curvytron_image, 
     experimental_options={"flash": "us-east"},
     region="us-east",
-    min_containers=1,
+    min_containers=10,
 )
 class Curvytron:
     @modal.enter()

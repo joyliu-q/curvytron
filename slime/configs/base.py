@@ -80,6 +80,15 @@ QWEN3_4B_MODEL_ARGS = """
     --use-rotary-position-embeddings --rotary-base 1000000
 """
 
+QWEN3_0_6B_MODEL_ARGS = """
+    --num-layers 28 --hidden-size 1024 --ffn-hidden-size 3072
+    --num-attention-heads 16 --group-query-attention --num-query-groups 8
+    --kv-channels 128 --vocab-size 151936
+    --normalization RMSNorm --norm-epsilon 1e-6 --swiglu
+    --disable-bias-linear --qk-layernorm
+    --use-rotary-position-embeddings --rotary-base 1000000
+"""
+
 QWEN3_8B_MODEL_ARGS = """
     --num-layers 36 --hidden-size 4096 --ffn-hidden-size 12288
     --num-attention-heads 32 --group-query-attention --num-query-groups 8
@@ -106,8 +115,8 @@ DEFAULT_OPTIMIZER_ARGS = """
 
 DEFAULT_GRPO_ARGS = """
     --advantage-estimator grpo
-    --use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl
-    --entropy-coef 0.00
+    --use-kl-loss --kl-loss-coef 0.01 --kl-loss-type low_var_kl
+    --entropy-coef 0.01
     --eps-clip 0.2 --eps-clip-high 0.28
 """
 

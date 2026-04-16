@@ -38,7 +38,7 @@ def _create_session(base: str, headers: dict, seed: str) -> dict:
         "warmup_ms": 0,
         "warmdown_ms": 0,
         "print_delay_ms": 0,
-        "auto_advance": True,
+        "auto_advance": False,
     }
     resp = requests.post(f"{base}/api/rl/sessions", json=body, headers=headers, timeout=30)
     if resp.status_code not in (200, 201):
@@ -99,6 +99,22 @@ def _send_action(base: str, headers: dict, session_id: str, actor_id: str, actio
     )
 
 
+def _step(base: str, headers: dict, session_id: str, actions: dict) -> dict:
+    """Submit actions for all actors and synchronously advance the game.
+
+    `actions` maps actor_id (stringified) -> action. Returns the new state.
+    """
+    resp = requests.post(
+        f"{base}/api/rl/sessions/{session_id}/step",
+        json={"actions": {str(k): v for k, v in actions.items()}},
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to step: {resp.status_code} {resp.text}")
+    return resp.json()
+
+
 def _delete_session(base: str, headers: dict, session_id: str):
     """Delete (cleanup) a game session."""
     try:
@@ -134,6 +150,9 @@ class AsyncGameClient:
 
     async def send_action(self, session_id: str, actor_id: str, action: str):
         await asyncio.to_thread(_send_action, self.base, self.headers, session_id, actor_id, action)
+
+    async def step(self, session_id: str, actions: dict) -> dict:
+        return await asyncio.to_thread(_step, self.base, self.headers, session_id, actions)
 
     async def delete_session(self, session_id: str):
         await asyncio.to_thread(_delete_session, self.base, self.headers, session_id)
