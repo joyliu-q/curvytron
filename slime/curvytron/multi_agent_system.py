@@ -7,8 +7,13 @@ Reward per step: escalating survival bonus + reachable-space fraction.
 
 import asyncio
 import collections
+import itertools
+import json
+import os
+import uuid
 from collections import deque
 from copy import deepcopy
+from datetime import datetime, timezone
 
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
@@ -24,6 +29,14 @@ ACTIONS = ["left", "straight", "right"]
 _game_log: list[dict] = []
 _game_count = 0
 _LOG_EVERY = 8  # print a digest every N games
+
+# ── Trace recording (for replay viewer) ────────────────────────────────────
+# Every Nth game is saved step-by-step to /data/game_traces/*.json on the
+# curvytron-data Modal volume, to be rendered by slime/game_viewer.py.
+TRACE_EVERY = 10
+TRACE_DIR = os.environ.get("CURVYTRON_TRACE_DIR", "/data/game_traces")
+_trace_counter = itertools.count()
+_trace_volume = None
 
 
 def _log_game(summary: dict):
@@ -77,6 +90,91 @@ def _print_digest():
     print(f"  A actions: {last['actions_a']}")
     print(f"  B actions: {last['actions_b']}")
     print("[curvytron-log] ─────────────────────────────────────────────────────\n")
+
+
+def _commit_trace_volume():
+    """Best-effort commit of the curvytron-data volume so the viewer can read."""
+    global _trace_volume
+    try:
+        if _trace_volume is None:
+            import modal
+
+            _trace_volume = modal.Volume.from_name(
+                "curvytron-data", create_if_missing=True
+            )
+        _trace_volume.commit()
+    except Exception as e:
+        print(f"[curvytron-trace] commit failed: {e}")
+
+
+def _snapshot_players(state: dict) -> list[dict]:
+    out = []
+    for p in state.get("players", []):
+        out.append(
+            {
+                "player_id": p.get("player_id"),
+                "marker": p.get("marker"),
+                "name": p.get("name"),
+                "x": p.get("x"),
+                "y": p.get("y"),
+                "angle": p.get("angle"),
+                "alive": p.get("alive"),
+            }
+        )
+    return out
+
+
+def _make_step_record(
+    step_idx: int,
+    state: dict,
+    action_a,
+    action_b,
+    reward_a,
+    reward_b,
+) -> dict:
+    occ = state.get("occupancy", {}) or {}
+    return {
+        "step": step_idx,
+        "tick": state.get("tick"),
+        "board": occ.get("ascii"),
+        "players": _snapshot_players(state),
+        "action_a": action_a,
+        "action_b": action_b,
+        "reward_a": reward_a,
+        "reward_b": reward_b,
+    }
+
+
+def _save_trace(
+    seed: str,
+    outcome: str,
+    total_steps: int,
+    trace_steps: list[dict],
+    marker_a: str,
+    marker_b: str,
+):
+    try:
+        os.makedirs(TRACE_DIR, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        safe_seed = "".join(c if c.isalnum() or c in "-_" else "_" for c in seed)
+        fname = f"{ts}_{safe_seed}_{uuid.uuid4().hex[:6]}.json"
+        path = os.path.join(TRACE_DIR, fname)
+        payload = {
+            "seed": seed,
+            "recorded_at": ts,
+            "outcome": outcome,
+            "total_steps": total_steps,
+            "markers": {"a": marker_a, "b": marker_b},
+            "steps": trace_steps,
+        }
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        print(
+            f"[curvytron-trace] saved {fname} ({total_steps} steps, outcome={outcome})"
+        )
+        _commit_trace_volume()
+    except Exception as e:
+        print(f"[curvytron-trace] save failed for seed={seed}: {e}")
 
 
 # Constrained decoding regex — forces SGLang to output exactly one valid action
@@ -370,6 +468,10 @@ async def run_selfplay_game(args, sample: Sample):
     client = AsyncGameClient()
     session_id = None
 
+    # Decide whether to record this game step-by-step for the replay viewer.
+    record = next(_trace_counter) % TRACE_EVERY == 0
+    trace_steps: list[dict] = []
+
     try:
         # ── Setup game ──────────────────────────────────────────────────
         session = await client.create_session(game_seed)
@@ -385,6 +487,11 @@ async def run_selfplay_game(args, sample: Sample):
                 marker_a = p.get("marker", "?")
             elif p.get("player_id") == actor_b["player_id"]:
                 marker_b = p.get("marker", "?")
+
+        if record:
+            trace_steps.append(
+                _make_step_record(0, state, None, None, None, None)
+            )
 
         # ── Game loop ───────────────────────────────────────────────────
         step = 0
@@ -516,6 +623,18 @@ async def run_selfplay_game(args, sample: Sample):
                     f"[curvytron-ma] DEBUG step={step} seed={game_seed} a_rewards={a_rewards} b_rewards={b_rewards} a_alive={a_alive} b_alive={b_alive}"
                 )
 
+            if record:
+                trace_steps.append(
+                    _make_step_record(
+                        step,
+                        state,
+                        action_a,
+                        action_b,
+                        a_rewards[-1] if a_rewards else None,
+                        b_rewards[-1] if b_rewards else None,
+                    )
+                )
+
         all_samples = args.results_dict["player_a"] + args.results_dict["player_b"]
         if not all_samples:
             print(f"[curvytron-ma] Warning: no samples generated for seed {game_seed}")
@@ -550,6 +669,9 @@ async def run_selfplay_game(args, sample: Sample):
                 "final_board": final_board,
             }
         )
+
+        if record and trace_steps:
+            _save_trace(game_seed, outcome, step, trace_steps, marker_a, marker_b)
 
         return all_samples
 

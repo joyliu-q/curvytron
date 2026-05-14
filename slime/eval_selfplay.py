@@ -24,7 +24,6 @@ import time
 from pathlib import Path
 
 import modal
-from slime.modal_train import convert_checkpoint
 
 MINUTES = 60
 
@@ -36,7 +35,7 @@ CHECKPOINTS_PATH = Path("/checkpoints")
 
 CURVYTRON_URL = os.environ.get(
     "CURVYTRON_URL",
-    "https://joyliu-q--curvytron-curvytron.us-east.modal.direct",
+    "https://modal-labs-joy-dev--curvytron-curvytron.us-east.modal.direct",
 )
 
 ACTION_REGEX = r"(left|straight|right)"
@@ -311,19 +310,31 @@ def eval_vs_baseline(
         baseline_path: Same format as current_path.
         num_games: Number of games to play.
     """
+    convert_checkpoint = modal.Function.from_name("curvytron", "convert_checkpoint")
+
     # Resolve paths
     def resolve(p):
         full = CHECKPOINTS_PATH / p
         if full.exists():
             return str(full)
-        # if it is not suffixed with _hf, we need to convert it to _hf with convert_checkpoint.remote.aio
+        # If it is not suffixed with _hf, convert it via the deployed curvytron app.
         if not p.endswith("_hf"):
-            convert_checkpoint.remote.aio(
-                model_path=p,
-                iter_dir=p,
-                origin_hf_dir=p,
-            )
-            return str(full / f"{p}_hf")
+            # p looks like "<model_path>/iter_XXXXXXX"; split into model_path and iter_dir.
+            parts = p.split("/")
+            if len(parts) >= 2:
+                model_path = "/".join(parts[:-1])
+                iter_dir = parts[-1]
+                # origin_hf_dir is the base HF repo name embedded in model_path
+                # (e.g. "curvytron-selfplay-Qwen3-4B-..." -> "Qwen3-4B").
+                match = re.search(r"(Qwen[^-/]*-[^-/]+)", model_path)
+                origin_hf_dir = match.group(1) if match else "Qwen3-4B"
+                convert_checkpoint.remote(
+                    model_path=model_path,
+                    iter_dir=iter_dir,
+                    origin_hf_dir=origin_hf_dir,
+                )
+                checkpoints_vol.reload()
+                return str(CHECKPOINTS_PATH / model_path / f"{iter_dir}_hf")
         # Might be an HF model ID — SGLang will download it
         return p
 

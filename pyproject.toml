@@ -1,9 +1,11 @@
 [project]
 name = "curvytron"
 version = "0.1.0"
-description = "Add your description here"
+description = "Curvytron — LLM self-play RL training for a multiplayer Snake/Tron game"
 requires-python = ">=3.12"
 dependencies = [
+    "modal",
+    "modal-training-gym @ git+https://github.com/modal-projects/training-gym.git@main",
     "requests>=2.32.5",
     "websocket-client>=1.6.0",
 ]
