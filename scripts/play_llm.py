@@ -32,7 +32,7 @@ from common import (
     render_frame, get_state, setup_session, add_common_args,
 )
 
-DEFAULT_LLM_ENDPOINT = "https://joyliu-q--curvytron-player-curvytronplayer.us-east.modal.direct/v1/chat/completions"
+DEFAULT_LLM_ENDPOINT = "https://modal-labs-joy-dev--curvytron-bot-curvytronbot.us-east.modal.direct/generate"
 from prompts import SYSTEM_PROMPT
 
 # How many game ticks to hold each LLM action before asking again
@@ -187,40 +187,42 @@ def parse_action(reply):
 
 
 def choose_action_llm(llm_endpoint, state, my_player_id, my_marker, conversation_history, llm_board=None):
-    """Ask the LLM endpoint (OpenAI-compatible) to choose an action.
+    """Ask the LLM endpoint to choose an action.
 
-    Uses guided_choice for constrained decoding (single token output) and
-    a compact prompt to minimize input tokens.
+    Uses SGLang /generate with regex constraint and an empty think block
+    in the prompt to bypass Qwen3 thinking mode.
     """
     turn_msg = build_turn_prompt(state, my_player_id, my_marker, llm_board)
 
-    # Keep a short sliding window to give the model context of recent moves
+    # Build prompt manually with im_start/im_end
+    prompt = f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+
+    # Keep a short sliding window for context
     max_history = 5
     if len(conversation_history) > max_history * 2:
         conversation_history[:] = conversation_history[-(max_history * 2):]
 
+    for msg in conversation_history:
+        prompt += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+
+    # Empty think block tells Qwen3 to skip thinking
+    prompt += f"<|im_start|>user\n{turn_msg}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
     conversation_history.append({"role": "user", "content": turn_msg})
 
     try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
-
         payload = {
-            "messages": messages,
-            "max_tokens": 50,
-            "temperature": 0.0, # no randomness
-            "guided_choice": ACTIONS,
-            # Disable Qwen3 thinking mode — we just need one word
-            "chat_template_kwargs": {"enable_thinking": False},
+            "text": prompt,
+            "sampling_params": {"temperature": 0.0, "max_new_tokens": 5},
+            "regex": "(left|straight|right)",
         }
 
         resp = requests.post(llm_endpoint, json=payload, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-
-        reply = data["choices"][0]["message"]["content"].strip()
+        reply = resp.json().get("text", "").strip()
         conversation_history.append({"role": "assistant", "content": reply})
 
-        action = parse_action(reply)
+        action = reply.lower() if reply.lower() in ACTIONS else parse_action(reply)
         return action, reply
     except Exception as e:
         if conversation_history and conversation_history[-1].get("role") == "user":

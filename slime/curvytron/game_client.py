@@ -12,7 +12,7 @@ import requests
 
 DEFAULT_SERVER = os.environ.get(
     "CURVYTRON_URL",
-    "https://joyliu-q--curvytron-curvytron.us-east.modal.direct",
+    "https://modal-labs-joy-dev--curvytron-curvytron.us-east.modal.direct",
 )
 DEFAULT_TOKEN = os.environ.get("CURVYTRON_RL_API_TOKEN", "")
 
@@ -20,9 +20,14 @@ GRID_SIZE = 88
 MAX_STEPS = 2000
 
 
-def _headers(token: str | None = None) -> dict:
+def _headers(token: str | None = None, session_id: str | None = None) -> dict:
     t = token or DEFAULT_TOKEN
-    return {"Authorization": f"Bearer {t}"} if t else {}
+    h: dict = {}
+    if t:
+        h["Authorization"] = f"Bearer {t}"
+    if session_id:
+        h["Modal-Session-Id"] = session_id
+    return h
 
 
 # ── Synchronous helpers (called via asyncio.to_thread) ──────────────────────
@@ -38,12 +43,16 @@ def _create_session(base: str, headers: dict, seed: str) -> dict:
         "warmup_ms": 0,
         "warmdown_ms": 0,
         "print_delay_ms": 0,
-        "auto_advance": True,
+        "auto_advance": False,
     }
-    resp = requests.post(f"{base}/api/rl/sessions", json=body, headers=headers, timeout=30)
+    import uuid
+    create_headers = {**headers, "Modal-Session-Id": uuid.uuid4().hex}
+    resp = requests.post(f"{base}/api/rl/sessions", json=body, headers=create_headers, timeout=30)
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Failed to create session: {resp.status_code} {resp.text}")
-    return resp.json()
+    data = resp.json()
+    data["_modal_session_id"] = create_headers["Modal-Session-Id"]
+    return data
 
 
 def _add_bot(base: str, headers: dict, session_id: str, name: str, color: str) -> dict:
@@ -99,6 +108,22 @@ def _send_action(base: str, headers: dict, session_id: str, actor_id: str, actio
     )
 
 
+def _step(base: str, headers: dict, session_id: str, actions: dict) -> dict:
+    """Submit actions for all actors and synchronously advance the game.
+
+    `actions` maps actor_id (stringified) -> action. Returns the new state.
+    """
+    resp = requests.post(
+        f"{base}/api/rl/sessions/{session_id}/step",
+        json={"actions": {str(k): v for k, v in actions.items()}},
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to step: {resp.status_code} {resp.text}")
+    return resp.json()
+
+
 def _delete_session(base: str, headers: dict, session_id: str):
     """Delete (cleanup) a game session."""
     try:
@@ -111,29 +136,49 @@ def _delete_session(base: str, headers: dict, session_id: str):
 
 
 class AsyncGameClient:
-    """Async wrapper around the curvytron game server HTTP API."""
+    """Async wrapper around the curvytron game server HTTP API.
+
+    After create_session, all subsequent calls use the Modal-Session-Id
+    header to pin requests to the same container (session affinity).
+    """
 
     def __init__(self, base_url: str | None = None, token: str | None = None):
         self.base = (base_url or DEFAULT_SERVER).rstrip("/")
-        self.headers = _headers(token)
+        self._token = token
+        self._base_headers = _headers(token)
+        self._session_headers: dict = {}
+
+    def _headers_for(self, session_id: str | None = None) -> dict:
+        if session_id and session_id in self._session_headers:
+            return self._session_headers[session_id]
+        return self._base_headers
 
     async def create_session(self, seed: str) -> dict:
-        return await asyncio.to_thread(_create_session, self.base, self.headers, seed)
+        data = await asyncio.to_thread(_create_session, self.base, self._base_headers, seed)
+        sid = data.get("session_id", "")
+        modal_sid = data.pop("_modal_session_id", "")
+        if sid and modal_sid:
+            self._session_headers[sid] = {**self._base_headers, "Modal-Session-Id": modal_sid}
+        return data
 
     async def add_bot(self, session_id: str, name: str, color: str) -> dict:
-        return await asyncio.to_thread(_add_bot, self.base, self.headers, session_id, name, color)
+        return await asyncio.to_thread(_add_bot, self.base, self._headers_for(session_id), session_id, name, color)
 
     async def wait_for_players(self, session_id: str, n: int = 2) -> dict:
-        return await asyncio.to_thread(_wait_for_players, self.base, self.headers, session_id, n)
+        return await asyncio.to_thread(_wait_for_players, self.base, self._headers_for(session_id), session_id, n)
 
     async def start_game(self, session_id: str) -> dict:
-        return await asyncio.to_thread(_start_game, self.base, self.headers, session_id)
+        return await asyncio.to_thread(_start_game, self.base, self._headers_for(session_id), session_id)
 
     async def get_state(self, session_id: str) -> dict:
-        return await asyncio.to_thread(_get_state, self.base, self.headers, session_id)
+        return await asyncio.to_thread(_get_state, self.base, self._headers_for(session_id), session_id)
 
     async def send_action(self, session_id: str, actor_id: str, action: str):
-        await asyncio.to_thread(_send_action, self.base, self.headers, session_id, actor_id, action)
+        await asyncio.to_thread(_send_action, self.base, self._headers_for(session_id), session_id, actor_id, action)
+
+    async def step(self, session_id: str, actions: dict) -> dict:
+        return await asyncio.to_thread(_step, self.base, self._headers_for(session_id), session_id, actions)
 
     async def delete_session(self, session_id: str):
-        await asyncio.to_thread(_delete_session, self.base, self.headers, session_id)
+        await asyncio.to_thread(_delete_session, self.base, self._headers_for(session_id), session_id)
+        self._session_headers.pop(session_id, None)

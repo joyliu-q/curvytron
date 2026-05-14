@@ -49,11 +49,28 @@ async def generate_curvytron_multiagent(
     async with _game_semaphore:
         samples = await run_selfplay_game(args, sample)
 
-    # SLIME crashes on empty groups (IndexError at sglang_rollout.py:375).
-    # Return a dummy sample with zero reward if the game failed.
+    # SLIME crashes on empty groups (IndexError at sglang_rollout.py:375)
+    # and Megatron crashes with narrow() on zero-length sequences.
+    # Return a properly-formed dummy sample if the game failed.
     if not samples:
-        fallback = sample
+        from copy import deepcopy
+
+        tokenizer = _get_tokenizer(args.hf_checkpoint)
+        dummy_prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": "game"}, {"role": "user", "content": "choose"}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        dummy_ids = tokenizer(dummy_prompt, add_special_tokens=False)["input_ids"]
+        action_ids = tokenizer("straight", add_special_tokens=False)["input_ids"]
+
+        fallback = deepcopy(sample)
+        fallback.prompt = dummy_prompt
+        fallback.tokens = dummy_ids + action_ids
+        fallback.response = "straight"
+        fallback.response_length = len(action_ids)
         fallback.reward = 0.0
+        fallback.status = Sample.Status.COMPLETED
         return [fallback]
 
     # Debug: log reward state before returning to SLIME
